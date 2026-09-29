@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Tests for the explicit aero layer (paramotor_aero.py).
 
-Covers plan sections 3.3 and 3.4 only.  Brakes (3.5) and actuator lags (3.6)
-are deliberately not implemented and are not tested here.
+Covers the canopy and pod aerodynamic layer.
+Actuator lags are not implemented.
 """
 import math
 import numpy as np
@@ -441,16 +441,6 @@ def test_validated_thrust_envelope():
           f"(departs; needs stall + rigging trim)")
 
 
-def test_brakes_are_stubbed():
-    """3.5 is explicitly out of scope: the hook must exist and return zero."""
-    f, M = A.brake_wrench_frd(6.0, np.array([6.0, 0, 0]), 0.5, 0.2, PP.PEEK_1M)
-    check("brake hook present and returns zero (3.5 not yet done)",
-          np.allclose(f, 0) and np.allclose(M, 0))
-    keys = set(PP.PEEK_1M)
-    check("no brake coefficients smuggled into the parameter sets",
-          not any(k.startswith(("Cl_d", "Cn_d", "CLd", "CDd")) or k == "d" for k in keys))
-
-
 if __name__ == "__main__":
     print("\n\033[1maero layer -- plan sections 3.3 and 3.4\033[0m\n")
     print(" prerequisites (3.1)")
@@ -470,8 +460,6 @@ if __name__ == "__main__":
     print("\n free flight")
     test_unpowered_glide(); test_strip_fixes_the_spiral(); test_powered_climb()
     test_validated_thrust_envelope()
-    print("\n scope")
-    test_brakes_are_stubbed()
     n, tot = sum(_results), len(_results)
     print(f"\n{(GREEN if n==tot else RED)}{n}/{tot} passed{OFF}\n")
     raise SystemExit(0 if n == tot else 1)

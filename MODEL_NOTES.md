@@ -221,8 +221,7 @@ widened the usable range. `test_departure_above_one_newton_is_known` pins it.
 
 ### Still not modelled
 
-Brakes (eqs. 20–22) and actuator lags. `brake_wrench_frd()` is the hook and
-returns zero: the paper's Table 1 gives C_lδa = +0.0021 while its own §3.2
+Brake-specific aerodynamics (eqs. 20–22). No additional brake force is applied: the paper's Table 1 gives C_lδa = +0.0021 while its own §3.2
 identifies −0.2959 — 140× and a sign flip — and those belong to a d/b = 0.186
 brake cascade, where this robot pulls one tendon at one corner of one tip panel.
 The brake chain is still purely geometric. Stall is not modelled by the paper

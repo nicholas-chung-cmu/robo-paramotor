@@ -163,7 +163,7 @@ PEEK_1M = dict(
 # section 3.2 identifies -0.2959, a factor of 140 and a sign flip, and those
 # were identified for a d/b = 0.186 brake cascade spread along the trailing
 # edge.  This robot pulls one tendon at one corner of one tip panel.  The
-# numbers cannot transfer and the hook in paramotor_aero.brake_wrench_frd()
-# returns zero until they are identified.
+# numbers cannot transfer; brake actuation currently acts only through the
+# physical servo arms and tendons.
 
 SETS = {"paper": PAPER_ACRA2012, "peek": PEEK_1M}

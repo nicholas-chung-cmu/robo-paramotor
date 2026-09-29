@@ -17,12 +17,12 @@ cannot see the propeller turn).
 CHANGING ACTUATOR VALUES
     The viewer's right-hand panel has a Control section with one slider per
     actuator: thrust, servo_pos_L, servo_pos_R. Drag those to fly it by hand.
-    This script deliberately does NOT rewrite ctrl every step, or the sliders
-    would be overwritten as fast as you move them. It only:
-      - sets thrust once at startup, and
-      - re-spins the propeller if YOU change the thrust slider, so the
-        gyroscopic moment stays consistent with thrust.
-    --sweep is the exception: it drives the two servo sliders continuously.
+    Hold Left / Right to target full left / right brake; release to target zero.
+    Both arrows can be held together. Brake commands follow a critically damped
+    response, reaching 99% of the target in about one simulation second.
+    Sliders and --sweep use the same smoothing. Brake keys stop --sweep.
+    Up / Down changes thrust by 0.1 N per press; holding repeats.
+    Thrust changes also update propeller speed to keep gyroscopic effects consistent.
 
 DRAGGING BODIES
     double-click           select a body
@@ -33,6 +33,9 @@ DRAGGING BODIES
 """
 import argparse
 import time
+from queue import SimpleQueue
+
+import glfw
 from pathlib import Path
 
 import numpy as np
@@ -210,6 +213,101 @@ THRUST = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, "thrust")
 servos = [a for a in (mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, n)
                       for n in ("servo_pos_L", "servo_pos_R")) if a >= 0]
 PERT = None
+control_keys = SimpleQueue()
+THRUST_KEY_STEP = 0.1  # N per press or key-repeat event
+brake_actuators = {
+    glfw.KEY_LEFT: mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, "servo_pos_L"),
+    glfw.KEY_RIGHT: mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, "servo_pos_R"),
+}
+sweep_enabled = args.sweep
+# [smoothed position, velocity, target], in servo radians and simulation seconds.
+brake_states = {a: [float(d.ctrl[a]), 0.0, float(d.ctrl[a])] for a in servos}
+BRAKE_RESPONSE_RATE = 6.64  # critically damped step: 99% settled after 1 second
+
+
+# Keep C callback references alive until the viewer window has been destroyed.
+raw_key_callback = None
+native_key_callback = None
+
+
+def on_glfw_key(window, key, scancode, action, mods):
+    """Receive actual press/release events, retaining native non-brake controls."""
+    if key in brake_actuators:
+        control_keys.put((key, action != glfw.RELEASE))
+    elif key in (glfw.KEY_UP, glfw.KEY_DOWN):
+        if action != glfw.RELEASE:
+            control_keys.put((key, True))
+    elif native_key_callback:
+        native_key_callback(window, key, scancode, action, mods)
+
+
+def on_key(key):
+    """Install the release-aware hook on the viewer thread's first key event.
+
+    MuJoCo's public callback exposes presses only. GLFW's Python wrapper
+    cannot return a callback installed by C++, so use the underlying setter
+    to preserve and chain the viewer's native callback. GLFW synthesizes key
+    releases when focus is lost, which also releases held brakes.
+    """
+    global raw_key_callback, native_key_callback
+    if raw_key_callback is not None:
+        return
+    window = glfw.get_current_context()
+    if not window:
+        raise RuntimeError("Cannot attach brake controls: viewer has no GLFW context")
+    raw_key_callback = glfw._GLFWkeyfun(on_glfw_key)
+    native_key_callback = glfw._glfw.glfwSetKeyCallback(window, raw_key_callback)
+    # This first press arrived through the old callback, before our hook.
+    if key in brake_actuators or key in (glfw.KEY_UP, glfw.KEY_DOWN):
+        control_keys.put((key, True))
+
+
+def apply_control_keys():
+    global sweep_enabled
+    # Slider edits are new targets; d.ctrl always receives the smoothed value
+    # before physics and the aerodynamic callback run.
+    for actuator, state in brake_states.items():
+        if d.ctrl[actuator] != state[0]:
+            lo, hi = m.actuator_ctrlrange[actuator]
+            state[2] = float(np.clip(d.ctrl[actuator], lo, hi))
+    while not control_keys.empty():
+        key, pressed = control_keys.get_nowait()
+        if key in (glfw.KEY_UP, glfw.KEY_DOWN):
+            if pressed and THRUST >= 0:
+                change = THRUST_KEY_STEP if key == glfw.KEY_UP else -THRUST_KEY_STEP
+                lo, hi = m.actuator_ctrlrange[THRUST]
+                value = float(np.clip(d.ctrl[THRUST] + change, lo, hi))
+                sync_prop(m, d, value)
+                print(f"Thrust: {value:.2f} N")
+            continue
+        sweep_enabled = False
+        actuator = brake_actuators[key]
+        if actuator >= 0:
+            brake_states[actuator][2] = m.actuator_ctrlrange[actuator, 1] if pressed else 0.0
+
+
+
+def advance_brakes(dt):
+    """Exact critically damped PD response; safe even if the timestep changes.
+
+    x'' = rate**2 * (target - x) - 2 * rate * x'
+    Keep velocity across target changes so a quick release stays smooth.
+    The physical servo actuator tracks this smoothed control target.
+    """
+    rate = BRAKE_RESPONSE_RATE
+    decay = np.exp(-rate * dt)
+    for actuator, state in brake_states.items():
+        position, velocity, target = state
+        error = position - target
+        slope = velocity + rate * error
+        position = target + (error + slope * dt) * decay
+        velocity = (velocity - rate * slope * dt) * decay
+        lo, hi = m.actuator_ctrlrange[actuator]
+        if position < lo or position > hi:
+            position = float(np.clip(position, lo, hi))
+            velocity = 0.0
+        state[:] = [position, velocity, target]
+        d.ctrl[actuator] = position
 
 
 def step():
@@ -240,7 +338,7 @@ if args.trim:
 
 mujoco.mj_forward(m, d)
 
-with mujoco.viewer.launch_passive(m, d) as v:
+with mujoco.viewer.launch_passive(m, d, key_callback=on_key) as v:
     v.opt.flags[mujoco.mjtVisFlag.mjVIS_TENDON] = True
     v.opt.flags[mujoco.mjtVisFlag.mjVIS_ACTUATOR] = True
     v.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = True
@@ -269,11 +367,19 @@ with mujoco.viewer.launch_passive(m, d) as v:
     print(f"loaded {XML}.  Right-hand panel -> Control: one slider per actuator "
           "(thrust, servo_pos_L/R).")
 
+    print("Thrust: Up/Down changes by 0.1 N; hold to repeat (model limits apply).")
+    if servos:
+        print("Brakes: hold Left/Right to target full brake; release to target zero. "
+              "Smooth response: ~1 simulation second. Brake keys stop --sweep.")
+    else:
+        print("Brake keys unavailable: this model has no position servo actuators.")
+
     if FROZEN:
         print(f"FROZEN at the {'trim' if args.trim else 'design'} pose. "
               "Nothing is stepped; dragging moves a body's pose.")
         while v.is_running():
             with v.lock():
+                apply_control_keys()
                 mujoco.mjv_applyPerturbPose(m, d, v.perturb, 1)
                 mujoco.mj_forward(m, d)
             v.sync()
@@ -295,15 +401,18 @@ with mujoco.viewer.launch_passive(m, d) as v:
             print("canopy tumbles -- known, needs a stall model and rigging trim.")
         wall_per_step = m.opt.timestep / SPEED
         while v.is_running():
-            t0 = time.time()
-            if args.sweep:
+            # Wall-clock corrections must not turn a frame delay into a long sleep.
+            t0 = time.monotonic()
+            apply_control_keys()
+            if sweep_enabled:
                 ang = 1.5 * (1 - np.cos(0.6 * d.time))
                 for a in servos:
-                    d.ctrl[a] = ang
+                    brake_states[a][2] = ang
+            advance_brakes(m.opt.timestep)
             # Only touch ctrl when YOU changed thrust, so the sliders stay usable.
             if float(d.ctrl[THRUST]) != last_thrust:
                 last_thrust = float(d.ctrl[THRUST])
                 sync_prop(m, d, last_thrust)    # keep rpm consistent with thrust
             step()
             v.sync()
-            time.sleep(max(0, wall_per_step - (time.time() - t0)))
+            time.sleep(max(0, wall_per_step - (time.monotonic() - t0)))

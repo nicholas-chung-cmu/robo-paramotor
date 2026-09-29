@@ -43,10 +43,10 @@ strip_forces_frd().  mode="lumped" is the paper's own single-force form and is
 what the rigid replication of the paper's aircraft must use, since that model
 has no panels.
 
-NOT IMPLEMENTED YET
--------------------
-Brakes, eqs. (20)-(22).  brake_wrench_frd() is the hook and returns zero.  The
-coefficients cannot be transferred from the paper -- see paramotor_params.py.
+BRAKES
+------
+Brake servos act mechanically through the suspension and trailing-edge tendons.
+There are no additional virtual brake-panel aerodynamic forces.
 """
 import math
 import numpy as np
@@ -186,21 +186,6 @@ def pure_moments_frd(V_P, omega_frd, alpha, phi, p, roll_native=False):
         p["Cmq"] * c * c * qr / (2.0 * V_P) + p["Cm0"] * c + p["Cma"] * c * alpha,
         p["Cnr"] * b * b * rr / (2.0 * V_P),
     ])
-
-
-def brake_wrench_frd(V_P, v_frd, delta_a, delta_s, p):
-    """Brake forces and moments, eqs. (20)-(22).  NOT IMPLEMENTED.
-
-    Returns (zeros(3), zeros(3)).  Deliberate: the four brake coefficients
-    cannot be carried over from the paper.  Table 1 gives C_ldelta_a = +0.0021
-    while section 3.2 of the same paper identifies -0.2959 -- a factor of 140
-    and a sign flip, on the same aircraft -- and the identified values belong to
-    a d/b = 0.186 brake cascade spread along the trailing edge, where this
-    robot pulls one tendon at one corner of one tip panel.  The brake chain
-    remains purely geometric (servo arm -> tendon -> trailing edge) until the
-    coefficients are identified on the vehicle.
-    """
-    return np.zeros(3), np.zeros(3)
 
 
 def euler_phi_from_R_frd(R_frd):
@@ -369,8 +354,7 @@ class ParamotorAero:
         a_mean = float(np.average(alpha, weights=(self.panel_area
                                                   if self.mode == "strip" else None)))
         M_P = pure_moments_frd(V_P, w_body, a_mean, phi, self.p, roll_native)
-        _, M_d = brake_wrench_frd(V_P, np.zeros(3), 0.0, 0.0, self.p)
-        self.wrench[self.canopy, 3:] += R_c @ (T_FLIP @ (M_P + M_d))
+        self.wrench[self.canopy, 3:] += R_c @ (T_FLIP @ M_P)
 
         # ---- fuselage ------------------------------------------------------
         vel = np.zeros(6)
@@ -429,8 +413,7 @@ class ParamotorAero:
         v_body = T_FLIP @ (R_c.T @ v_com_w)
         v_P = self.T_BP @ v_body
         f_P, alpha, alpha_raw, V_P = parafoil_force_frd(v_P, self.p)
-        f_d, _ = brake_wrench_frd(V_P, v_P, 0.0, 0.0, self.p)
-        f_body = self.T_BP.T @ (f_P + f_d)               # eq. (16)
+        f_body = self.T_BP.T @ f_P               # eq. (16)
         self.wrench[self.canopy, :3] = R_c @ (T_FLIP @ f_body)
         self.last["f_P"] = f_P.copy()
         return V_P, np.array([alpha]), np.array([alpha_raw])
