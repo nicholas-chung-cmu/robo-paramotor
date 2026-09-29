@@ -113,10 +113,6 @@ R_ARC = SPAN_FLAT / THETA                     # ~0.4421 m radius of curvature
 PANEL_CX = 0.0                                # panel centre = canopy centre chordwise
 TE_X = -CHORD / 2                             # trailing edge, where the brakes pull
 # Brakes pull the OUTERMOST panel at its OUTBOARD trailing-edge corner, which is
-# where a real brake cascade puts most of its authority. Because <replicate>
-# gives every panel identical children, each panel carries a tab at BOTH
-# spanwise edges (te_p at +y, te_n at -y); the left brake uses the +y edge of
-# the left tip, the right brake the -y edge of the right tip.
 BRAKE_PANEL = {"L": (N_PANEL - 1, "p"), "R": (0, "n")}
 TE_TAB_INSET = 0.004                          # m, tab sits just inboard of the corner
 
@@ -128,13 +124,6 @@ PCB_L, PCB_W, PCB_H = 0.080, 0.060, 0.012
 BAT_L, BAT_W, BAT_H = 0.056, 0.030, 0.016     # Gens ace 850 mAh 2S, EC2
 SERVO_L, SERVO_W, SERVO_H = 0.029, 0.012, 0.030   # Hitec BD10BL-CAN envelope
 # Servos lie FLAT: the 29 mm length and the 30 mm case height are both horizontal,
-# only the 12 mm thickness is vertical, and the output shaft points up (+z).
-# This is packaging only -- the capstan is an <equality>, so drum orientation does
-# not enter the line-pull arithmetic.
-# Laid flat: 29 mm length along x, 30 mm case height along y, 12 mm thickness
-# vertical. A servo's output shaft is normal to the top face, i.e. along the
-# 30 mm H dimension -- so once the case is laid flat the SHAFT POINTS ALONG y,
-# and the capstan drum axis must be y as well. The shaft points outboard.
 SERVO_BOX = (SERVO_L / 2, SERVO_H / 2, SERVO_W / 2)
 SERVO_X = -0.020
 SERVO_Y = 0.040
@@ -157,13 +146,7 @@ CHORD_K_SCALE = 1.0
 CHORD_RANGE = 0.5             # rad, how far each hinge may fold
 
 # Scenery. Purely visual: contype/conaffinity are 0, so there is no ground
-# contact and the dynamics are identical with or without it. Its only job is to
-# give parallax, because against a plain gradient sky a moving vehicle looks
-# stationary. GROUND_Z is well below the start point so the rig is flying.
-# Scaled to the aircraft, not to a real mountain range: this thing is 1 m
-# across and flies ~6 m/s, so kilometre-scale terrain makes it an invisible
-# speck. These give parallax at a few metres per second without the rig ending
-# up below the peaks.
+# contact and the dynamics are identical with or without it.
 GROUND_Z = -18.0
 TERRAIN_HALF = 90.0           # m, half-extent of the heightfield
 TERRAIN_H = 12.0              # m, height of the tallest peak (tops out at -6 m)
@@ -178,8 +161,7 @@ FRAME_L, FRAME_W, FRAME_H = 0.140, 0.090, 0.110
 MOTOR_X = -0.098                              # pusher: motor aft
 PROP_X = MOTOR_X - 0.018
 
-# Height of the canopy above the pod, i.e. the riser/line height. The original
-# 0.45 m hung the pod far too close to the wing. A real paraglider's suspension
+# Height of the canopy above the pod, i.e. the riser/line height. A real paraglider's suspension
 # lines are "typically 4-5 m long, with the end attached to 2-4 further lines of
 # around 2 m", plus ~0.4 m risers (https://en.wikipedia.org/wiki/Paragliding),
 # so ~6.5-7 m of line height under a wing of ~10-11 m flat span: about 0.63 of
@@ -205,49 +187,41 @@ BRAKE_FREE = 0.005                            # m of rigged free travel before t
 SERVO_ARMATURE = 5e-5        # kg.m^2, reflected
 SERVO_KP = 2.0               # N.m/rad, arm must hold line tension x arm length
 SERVO_KV = 0.020             # N.m.s/rad
-# SERVO TORQUE CAP, in MuJoCo's own units: N.m on the arm hinge.
+# SERVO TORQUE CAP, in N.m on the arm hinge.
 #
-# 1.0 N.m is a deliberate SOFTWARE limit, not a hardware rating. It was 4.0.
-# For context, at the 40 mm arm this is 25 N of brake line tension, and the
-# real BD10BL-CAN stalls at 0.275 N.m (7.4 V) = 6.9 N of pull -- so the cap
-# sits above what the hardware can actually deliver and the servo, not this
-# number, is the binding limit. Set SERVO_TAU_CAP = SERVO_TAU_STALL to model
-# the real part.
-#
-# Do not set this much lower without checking tracking: at 0.040 N.m the
-# position servo saturates and stops following its command, missing a 2.0 rad
-# request by 0.84 rad.
-SERVO_TAU_CAP = 1.0          # N.m on the arm hinge
+SERVO_TAU_CAP = 0.275          # N.m on the arm hinge
 SERVO_TAU_STALL = 0.275      # N.m, BD10BL-CAN datasheet stall at 7.4 V
 
 # Propeller drag-torque / thrust ratio, the skydio_x2 "gear" trick.
 # GWS EP8043 at ~10 krpm: P_mech ~44 W -> Q ~0.042 N.m against T = 4.02 N.
 KM_KT = 0.0105               # m
 
-# Propeller spin inertia: solid disk, I = m*R^2/2, taken from the geom itself.
-# At the design speed (~250 rev/s) the two-blade transverse asymmetry averages
-# out, so an axisymmetric disk is the right idealisation. Note this is ~1.5x the
-# uniform-rod value, so it OVERSTATES H and the gyroscopic moment slightly --
-# conservative for control design. Re-measure the real prop if it matters.
+# Propeller spin inertia: solid disk, I = m*R^2/2.  NOT AN INPUT -- nothing reads
+# I_SPIN.  No <inertial> element is emitted anywhere in this model; the compiler
+# derives every tensor from geom shape + explicit mass, and it reproduces the
+# line below exactly (prop_disk diaginertia[2] = 2.580640e-05).  Kept as the
+# cross-check, and so the number is written down somewhere.
+#
+# The propeller carries a REAL spin DOF with zero armature, so the inertia is
+# entirely the disk's own and H = I*omega is real angular momentum.  MuJoCo's
+# own Coriolis terms then produce M = -(omega_body x H) natively; no callback
+# computes it.  This is also why <option integrator> is "implicit" and NOT
+# "implicitfast": implicitfast drops the Coriolis/centrifugal term from the
+# implicit Jacobian, which is precisely the term generating that moment.
+# Changing integrator for speed silently degrades the propeller gyroscopics.
 I_SPIN = M["prop"] * G * (PROP_D / 2)**2 / 2.0    # kg.m^2, ~2.58e-5
 # T = K_T * omega^2, anchored on the spec's static bench point (410 gf) at an
-# assumed ~10 krpm. BOTH ends of that anchor are estimates -- re-fit from a
-# thrust stand. Used to spin prop_spin kinematically to match thrust.
-T_BENCH = 4.02                                # N, spec static bench figure
+# assumed ~10 krpm.
+# 
+#  BOTH ends of that anchor are estimates -- fit to real thruster
+T_BENCH = 4.02                                # N, spec 
 OMEGA_BENCH = 10_000 * 2 * math.pi / 60.0     # rad/s at that figure
 K_T = T_BENCH / OMEGA_BENCH**2
 # Commanded thrust ceiling, i.e. the ctrlrange on the thrust actuator.
 #
 # 2.0 N = T/W 0.63 on the 325.4 g all-up mass. It is BELOW the 4.02 N (410 gf)
 # static bench figure, so this is a deliberate software limit, not a hardware
-# one: the motor/prop can pull harder than this on the bench. It was 12 N,
-# which was 3x the bench figure and implied ~17,300 rpm at the fixed K_T
-# calibration -- above the 1800KV motor's own no-load speed on 2S (~15,100 rpm
-# at 8.4 V), so the old ceiling was not reachable by the real hardware either.
-#
-# Note the ceiling is still ABOVE the validated flight envelope of ~1.0 N
-# (T/W 0.31): past that the vehicle pitches up, the tension-only suspension
-# goes slack and the canopy tumbles. The slider will let you go there.
+# one: the motor/prop can pull harder than this on the bench. 
 THRUST_MAX = 2.0                              # N
 OMEGA_MAX = math.sqrt(THRUST_MAX / K_T)       # rad/s needed for THRUST_MAX
 ROTOR_KV = 0.005              # N.m.s/rad, velocity-servo gain
@@ -256,7 +230,7 @@ ROTOR_TAU_CAP = 0.2           # N.m, spin-up torque limit
 # suspension: 4 pod hardpoints x (A row, B row)
 # Arm pivots on the servo output face, outboard, about y.
 ARM_POS = (SERVO_X, SERVO_Y + SERVO_H / 2 + 0.004, SERVO_Z)
-# One merged airframe box: frame + PCB + battery + riser hardware + line guides.
+# One merged airframe box
 AIRFRAME_BOX = (0.070, 0.045, 0.042)
 AIRFRAME_POS = (0.010, 0.0, 0.026)
 
@@ -271,30 +245,14 @@ POD_HP = {
 A_ROW_X = 0.060       # canopy-frame x of the A (front) line row
 B_ROW_X = -0.060      # canopy-frame x of the B (rear) line row
 # C row: an anti-flap line close to the trailing edge, on the INBOARD panels
-# that the brakes never pull. Without it the rear of the centre section is
-# unsupported aft of the B row and flutters. This is what a real C riser does.
+
 C_ROW_X = -0.090      # ~96% chord, just forward of the trailing edge
 # Spanwise stations that carry suspension lines, given as span fractions so they
 # stay put when N_PANEL changes. 0.5 is the centre; these bracket it symmetrically.
 #
 # EVENLY SPACED, chosen against the measured spanwise load distribution rather
-# than by eye. The load itself is nearly flat -- 5.64% to 8.13% per panel at
-# trim, only 1.44x tip to centre -- so the only thing that unbalances the lines
-# is STATION SPACING.
+# than by eye.
 #
-# The previous set (0.15, 0.30, 0.42, 0.58, 0.70, 0.85) landed on panels
-# [0,2,4,5,8,9,11,13], whose gaps were 2,2,1,3,1,2,2: a three-panel hole at the
-# centre next to two adjacent pairs. That left one station carrying 16.1% of
-# span load while another carried 8.8%, a 1.83x spread, and an unsupported
-# three-panel run.
-#
-# These land on [0,2,4,6,7,9,11,13]: gaps 2,2,2,1,2,2,2. Max gap drops from 3
-# to 2, no station exceeds 15.4%, and the spread falls to 1.75x.
-#
-# An exhaustive search over symmetric eight-station sets found [0,3,4,6,7,9,10,13]
-# scores better on load spread alone (1.21x, max 14.2%) -- but it clusters into
-# pairs and reopens a three-panel gap at each tip. Uniform support beats a
-# marginally flatter load share, so it was not taken.
 LINE_FRACTIONS = (0.18, 0.32, 0.46, 0.54, 0.68, 0.82)
 # The brake anchors sit on the tip panels, so those panels MUST carry lines of
 # their own: otherwise the tip is unsupported exactly where the brake load goes
@@ -309,32 +267,6 @@ C_PANELS = [i for i in LINE_PANELS
 
 
 def station_rows(i):
-    """Which chordwise row(s) station i hangs from: ONE row per station.
-
-    This used to be A + B at every station plus C inboard, i.e. 20 tendons.
-    Measuring the line tensions in trimmed flight showed that was fiction:
-
-        live   A0 0.597  A2 0.181  C4 0.149  C6 0.473
-               C7 0.473  C9 0.148  A11 0.181  A13 0.597   N
-        dead   B0 B2 B4 B6 B7 B9 B11 B13  +  A4 A6 A7 A9
-
-    The ENTIRE B row carried zero load, 0% duty, at every thrust setting, and
-    so did the four inboard A lines. Three chordwise rows on a RIGID canopy is
-    statically indeterminate: the rest lengths decide which rows go taut, and
-    A (x = +0.060) and C (x = -0.090) straddle a wider chordwise base than B
-    (x = -0.060), so B never takes tension. Twelve of the twenty tendons were
-    decoration.
-
-    So each station now carries exactly the row that was already doing the
-    work: A outboard, C inboard. 20 suspension tendons -> 8, with the same
-    eight lines taut and the same load path.
-
-    WHAT THIS GIVES UP: redundancy. The dead lines were doing nothing at trim,
-    but they were a reserve that could have gone taut in a gust, under brake,
-    or during the pitch-up departure above ~1.2 N thrust. A real wing runs a
-    full A/B/C cascade for exactly that reason. If the canopy starts departing
-    in states it used to survive, this is the first thing to put back.
-    """
     return ("C",) if i in C_PANELS else ("A",)
 
 
@@ -428,9 +360,7 @@ def rest_lengths() -> dict:
     """Rigged length of every line, computed from geometry in the design pose.
 
     A rigged length is a property of the airframe as built, so it is plain
-    3-D distance between the two ends. No compile, no simulation, nothing to
-    settle. (This replaces a three-pass compile-measure-rewrite calibration
-    that only worked while an artificial force held the canopy up.)
+    3-D distance between the two ends. 
     """
     out = {}
     for i in LINE_PANELS:

@@ -12,18 +12,8 @@ test_aero.py          38 assertions on the aero layer
 view_paramotor.py     interactive viewer, tendons forced visible
 ```
 
-**Two places to edit, and they are not the same place.** Geometry, mass and
-rigging are generated: change `build_paramotor.py` and rebuild. Aerodynamics is
-*not in the XML at all* — the MJCF carries `density="0" viscosity="0"` on
-purpose — so coefficients change in `paramotor_params.py` with no rebuild.
 
 ```bash
-# change a coefficient -> just run it, nothing to rebuild
-$EDITOR paramotor_params.py && ../.venv/bin/python test_aero.py
-
-# change geometry/mass/rigging -> regenerate, then re-test
-../.venv/bin/python build_paramotor.py && ../.venv/bin/python test_aero.py
-
 # look at it (macOS needs mjpython: the viewer must own the main thread)
 ./view.sh                      # live, strip aero, 1.5 N, camera tracks the pod
 ./view.sh --thrust 0.8         # inside the validated envelope
@@ -55,54 +45,6 @@ the itemised BOM's 325.40 g (the suite asserts it), 74.6 g under the ceiling.
 
 ---
 
-## 1. Mass block diagram
-
-```
-                     ALL-UP 325.4 g   (ceiling 400 g, margin 74.6 g)
-  ┌───────────────────────────────────────┬────────────────────────────────┐
-  │ POD  257.4 g                          │ CANOPY  68.0 g                 │
-  ├───────────────────────────────────────┼────────────────────────────────┤
-  │ ┌───────────────────────────────────┐ │ ┌────────────────────────────┐ │
-  │ │ airframe_block        140.2 g     │ │ │ panel_00 .. panel_13 65.0 g│ │
-  │ │   pod structure   45              │ │ │  125 µm PEEK single skin   │ │
-  │ │   harness         12              │ │ │  1.000 m flat span, AR 5.1 │ │
-  │ │   FASTENERS        8  <- folded   │ │ │  0.196 m² flat             │ │
-  │ │   avionics PCB    68.2            │ │ │  0.156 m² projected        │ │
-  │ │     (ESC 10, MCU 30, IMU 1.7,     │ │ └────────────────────────────┘ │
-  │ │      baro 3, GNSS 7.3, RX 2.2,    │ │ ┌────────────────────────────┐ │
-  │ │      regs 7, INA260 4, log 3)     │ │ │ riser_tabs           3.0 g │ │
-  │ │   pod riser hw     3              │ │ └────────────────────────────┘ │
-  │ │   steering brackets/rigging 4     │ │                                │
-  │ └───────────────────────────────────┘ │                                │
-  │ battery_block 65.0  <- SEPARATE       │                                │
-  │ motor_can  19.6 │ servo_L/R   23.6    │                                │
-  │ prop disk   5.0 │ drum_L/R     4.0    │                                │
-  └───────────────────────────────────────┴────────────────────────────────┘
-```
-
-Everything except the motor, the servos and the battery is merged into one
-`airframe_block`.
-
-The **battery is kept separate** (`battery_block`, 65 g at z = −20 mm). It is the
-single largest discrete mass and it sits well below the rest, so folding it in
-visibly falsified the pod CG. Slide it fore/aft on its rail to trim.
-
-> **Residual caveat.** Within `airframe_block` the remaining 140.2 g is still one
-> uniform box, so PCB-versus-structure distribution is lost. Mass is exact,
-> distribution is approximate. Split further (`AIRFRAME_BOX`, `AIRFRAME_POS`)
-> before trusting anything finely CG-sensitive.
-
-Two figures are guesses rather than engineering:
-
-* **PCB area 80 × 60 mm** (`PCB_L/W/H`). Nothing in the spec fixes it. The *mass*
-  is not a guess — it is the spec's own allocations, merged.
-* Block shapes generally. Masses are budgeted; boxes are plausible envelopes.
-
-The spec's BOM previously stated 329.4 g; the line items sum to 325.4 g. That 4 g
-arithmetic error is corrected in `itemized_spec.md`.
-
----
-
 ## 5. Propulsion and actuator drive modes
 
 Rotor follows `mujoco_menagerie/skydio_x2`: one site actuator produces thrust and
@@ -115,22 +57,8 @@ limits carried by a `<default>` class:
 <position class="servo_pos" name="servo_pos_L"     joint="drum_L"/>
 ```
 
-> **One class per actuator type.** `<motor>`, `<velocity>` and `<position>` are
-> all aliases for `<general>` and share a single default slot, so two of them in
-> one class silently overwrite each other. A first attempt put the rotor motor
-> and the velocity servo in one class, and the position servo's `ctrlrange`
-> collapsed from ±12.57 to ±2 rad, capping the capstan at a quarter turn. Test 4
-> caught it.
-
-`KM_KT = 0.0105 m` is Q/T for the EP8043 at ~10 krpm (≈44 W mechanical, 0.042 N·m
-against 4.02 N). Flip its sign for the other rotation direction. Ceiling 4.0 N =
-410 gf is the spec's **static bench** figure, not thrust at 5.7–6.3 m/s, which
-the spec says is unestablished.
-
 ### Actuator count
 
-Two physical servos. An earlier build emitted four actuators (2 sides × 2 drive
-modes), which is confusing as a default. Default is now `--servo-mode position`:
 **4 actuators — `thrust`, `propeller_speed`, `servo_pos_L`, `servo_pos_R`**.
 `propeller_speed` is not a second motor; it is the propeller's spin state.
 
