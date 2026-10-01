@@ -133,9 +133,8 @@ ap.add_argument("--sweep", action="store_true",
                 help="live, cycling the brakes over 0 -> 3.0 rad of arm travel")
 ap.add_argument("--thrust", type=float, default=0.8,
                 help="propeller thrust in N (0 = unpowered); also sets rpm. "
-                     "Validated envelope is 0 to about 1.0 N (T/W 0.31); above "
-                     "that it pitches up, the suspension goes slack and the "
-                     "canopy tumbles.")
+                     "Powered flight envelope is not yet validated; neutral "
+                     "controls can produce a sustained turn.")
 ap.add_argument("--wind", type=float, default=6.0,
                 help="LAUNCH SPEED in m/s given to both bodies at t=0 (spec "
                      "design point 6.0). This is an initial condition, not a "
@@ -447,9 +446,8 @@ with ExitStack() as stack:
             print("AERO OFF: no lift, no drag. It will simply fall.")
         else:
             print(f"aero: {args.aero} mode, launched at {args.wind:.1f} m/s.")
-            print("Validated thrust envelope is 0 to about 1.0 N (T/W 0.31).")
-            print("Above that it pitches up, the suspension goes slack and the")
-            print("canopy tumbles -- known, needs a stall model and rigging trim.")
+            print("Powered flight envelope is not yet validated; neutral controls can turn.")
+            print("Alpha clipping is a coefficient guard, not a stall model.")
         wall_per_step = m.opt.timestep / SPEED
         while v.is_running():
             # Wall-clock corrections must not turn a frame delay into a long sleep.

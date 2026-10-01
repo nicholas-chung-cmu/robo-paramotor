@@ -216,7 +216,12 @@ wind, mass and aerodynamic coefficient randomization are not enabled.
 
 ## Validation performed
 
-Validated on the RTX 3060 Laptop GPU (6 GB): 36 existing aero checks, 10 RL
+The October 2026 aero review corrects force references and reaction-torque routing;
+see `MODEL_NOTES.md` section 6. All 10 RL checks pass on CPU with those changes,
+but 3 powered-flight acceptance checks fail. Powered trim is not validated.
+The GPU execution results below describe the earlier model revision.
+
+Previously validated on the RTX 3060 Laptop GPU (6 GB): 36 existing aero checks, 10 RL
 regression tests, PPO smoke training, checkpoint resume with 64 environments,
 and CSV evaluation on all seven fixed routes. The normal 64-environment,
 128-step, four-epoch configuration also completed two updates (16,384 control

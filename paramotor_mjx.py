@@ -60,9 +60,15 @@ class ParamotorMJX:
         return omega, d.cvel[body, 3:] + jp.cross(omega, offset)
 
     def panel_flow(self, d):
-        omega, velocity = self.body_velocity(d, self.canopy)
-        v = velocity + jp.cross(omega, d.xipos[self.panels] - d.xipos[self.canopy])
+        omega, velocity = self.canopy_velocity(d)
+        v = velocity + jp.cross(omega, d.xipos[self.panels] - d.subtree_com[self.canopy])
         return jp.einsum("nji,nj->ni", d.xmat[self.panels], v) * FLIP
+
+    def canopy_velocity(self, d):
+        """Velocity at the rigid canopy assembly CoM, not its massless root."""
+        omega, velocity = self.body_velocity(d, self.canopy)
+        offset = d.subtree_com[self.canopy] - d.xipos[self.canopy]
+        return omega, velocity + jp.cross(omega, offset)
 
     def raw_alpha(self, d):
         flow = self.panel_flow(d)
@@ -88,7 +94,7 @@ class ParamotorMJX:
         forces = jp.where((speed > 1e-6)[:, None], forces, 0.0)
         world = jp.einsum("nij,nj->ni", d.xmat[self.panels], forces * FLIP)
         wrench = jp.zeros((self.native.nbody, 6)).at[self.panels, :3].set(world)
-        omega, velocity = self.body_velocity(d, self.canopy)
+        omega, velocity = self.canopy_velocity(d)
         rates = (d.xmat[self.canopy].T @ omega) * FLIP
         V = jp.linalg.norm(velocity)
         Vsafe = jp.maximum(V, 1e-6)
