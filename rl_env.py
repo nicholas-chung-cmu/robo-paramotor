@@ -27,7 +27,13 @@ class EnvConfig:
     preview_m: tuple = (5.0, 10.0, 20.0, 40.0, 60.0)
     path_kind: str = "random"
     curriculum: bool = True
-    noise_std: dict = field(default_factory=dict)
+    noise_std: dict = field(default_factory=lambda: {
+        "gyro": 0.0013089975,                 # rad/s
+        "accel": 0.0176526,                # m/s²
+        "mag": 0.0,                  # same units as the model's magnetic field
+        "pod_pos": [2.5, 2.5, 0.5], # GPS x/y/z, meters taken/est. from datasheet
+        "pod_vel": [0.02, 0.02, 0.02], # GPS velocity, m/s est. from datasheet
+    })
     bias_std: dict = field(default_factory=dict)
     bias_walk_std: dict = field(default_factory=dict)  # sensor units / sqrt(second)
     gps_latency_s: float = 0.0
