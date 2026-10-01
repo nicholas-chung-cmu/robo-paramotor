@@ -1,5 +1,11 @@
 # TODO — what the paramotor MJCF needs before a PPO policy can control it
 
+> Implementation update: the JAX/MJX feedforward PPO environment, training and
+> evaluation entry points now live in this repo. See [RL.md](RL.md) for the active
+> design, configuration and commands. The checklist below is historical planning;
+> its CPU/Gym wrapper, observation and brake-model proposals are superseded where
+> they differ from that implementation.
+
 Scope: everything between the model as it stands today (`paramotor.xml` +
 `paramotor_aero.py`) and a PPO run that produces a usable control law.
 Grouped by whether it *blocks* training, *invalidates* training, or improves it.

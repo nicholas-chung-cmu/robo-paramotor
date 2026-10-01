@@ -4,6 +4,7 @@
 macOS needs mjpython, not python: the viewer must own the main thread.
 
     ../.venv/bin/mjpython view_paramotor.py              # LIVE, free flight, powered
+    ../.venv/bin/mjpython view_paramotor.py --csv flight.csv # log odometry
     ../.venv/bin/mjpython view_paramotor.py --sweep      # live + brakes cycling
     ../.venv/bin/mjpython view_paramotor.py --zoom 12    # camera pulled back
     ../.venv/bin/mjpython view_paramotor.py --slow       # 1/20 speed
@@ -32,6 +33,8 @@ DRAGGING BODIES
     Frozen applies the drag as a pose change; live applies it as a force.
 """
 import argparse
+import csv
+from contextlib import ExitStack
 import time
 from queue import SimpleQueue
 
@@ -45,35 +48,77 @@ import mujoco.viewer
 import paramotor_aero
 import paramotor_params
 
-# Propeller speed from thrust. T = K_T * omega^2, anchored on the spec's static
-# bench point (410 gf = 4.02 N) at an assumed ~10 krpm; re-fit from a thrust
-# stand. Mirrors K_T in build_paramotor.py. Spin inertia is read from the model
-# itself, so there is nothing to keep in sync.
-K_T = 4.02 / (10_000 * 2 * np.pi / 60.0) ** 2        # N/(rad/s)^2
-
-
-def omega_from_thrust(t_n):
-    """Shaft speed (rad/s) for a commanded thrust."""
-    return float(np.sqrt(max(t_n, 0.0) / K_T))
-
-
-def sync_prop(model, dat, t_n):
-    """Command thrust, and spin the propeller to match: omega = sqrt(T / K_T).
-
-    prop_spin has no actuator. It exists only to carry angular momentum so
-    MuJoCo generates the gyroscopic moment from its own Coriolis terms, and it
-    is driven kinematically from thrust so the two can never disagree. The
-    joint has no damping or applied torque, so the rate simply persists.
-    """
-    w = omega_from_thrust(t_n)
-    dat.ctrl[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "thrust")] = t_n
-    j = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "prop_spin")
-    if j >= 0:
-        dat.qvel[model.jnt_dofadr[j]] = w
-    return w
+from paramotor_control import sync_prop, smooth_brakes
 
 
 spin_up = sync_prop            # same thing now: one call ties thrust to rpm
+
+
+class OdometryCSV:
+    """20 Hz truth data: world XYZ (Z up), FLU body rates, angles in degrees.
+
+    Course is the horizontal CoM velocity heading, not the pod yaw. Course
+    rate is a wrapped finite difference between samples; blank at startup,
+    resets, or when horizontal speed is below 0.1 m/s. A private MjData copy
+    keeps sampling from changing the simulated state.
+    """
+    def __init__(self, model, stream):
+        self.model, self.stream = model, stream
+        self.data = mujoco.MjData(model)
+        self.writer = csv.writer(stream)
+        self.next_time, self.previous = 0.0, None
+        self.writer.writerow([
+            "time_s", "com_x_m", "com_y_m", "com_z_m",
+            "com_vx_mps", "com_vy_mps", "com_vz_mps", "speed_mps",
+            "course_deg", "course_rate_degps",
+            "pod_roll_deg", "pod_pitch_deg", "pod_yaw_deg",
+            "pod_wx_degps", "pod_wy_degps", "pod_wz_degps",
+            "canopy_roll_deg", "canopy_pitch_deg", "canopy_yaw_deg",
+            "thrust_N", "brake_L_target_rad", "brake_L_command_rad", "brake_L_actual_rad",
+            "brake_R_target_rad", "brake_R_command_rad", "brake_R_actual_rad",
+        ])
+        stream.flush()
+
+    def sample(self, source, brake_states):
+        if self.previous is not None and source.time < self.previous[0]:
+            self.next_time, self.previous = source.time, None
+        if source.time + 1e-9 < self.next_time:
+            return
+        m, d = self.model, self.data
+        mujoco.mj_copyData(d, m, source)
+        # mj_step leaves some derived quantities at the preceding state.
+        mujoco.mj_forward(m, d)
+        mujoco.mj_subtreeVel(m, d)
+        velocity = d.subtree_linvel[0]
+        course = float(np.arctan2(velocity[1], velocity[0])) if np.linalg.norm(velocity[:2]) >= 0.1 else None
+        course_rate = None
+        if self.previous is not None:
+            last_time, last_course = self.previous
+            if course is not None and last_course is not None and d.time > last_time:
+                change = np.arctan2(np.sin(course-last_course), np.cos(course-last_course))
+                course_rate = float(np.degrees(change) / (d.time-last_time))
+
+        def attitude(body):
+            R = d.xmat[m.body(body).id].reshape(3, 3)
+            return np.degrees([np.arctan2(R[2, 1], R[2, 2]),
+                               np.arcsin(np.clip(-R[2, 0], -1, 1)),
+                               np.arctan2(R[1, 0], R[0, 0])]).tolist()
+
+        spatial = np.zeros(6)
+        mujoco.mj_objectVelocity(m, d, mujoco.mjtObj.mjOBJ_BODY, m.body("pod").id, spatial, 1)
+        row = [float(d.time), *d.subtree_com[0], *velocity, float(np.linalg.norm(velocity)),
+               None if course is None else float(np.degrees(course)), course_rate,
+               *attitude("pod"), *np.degrees(spatial[:3]), *attitude("canopy"),
+               float(d.ctrl[m.actuator("thrust").id])]
+        for side in ("L", "R"):
+            actuator = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, "servo_pos_"+side)
+            actual = float(d.qpos[m.joint("arm_"+side).qposadr[0]])
+            row.extend([brake_states[actuator][2], float(d.ctrl[actuator]), actual]
+                       if actuator in brake_states else [None, None, actual])
+        self.writer.writerow(row)
+        self.stream.flush()
+        self.previous = (float(d.time), course)
+        self.next_time = float(d.time) + 0.05
 
 
 ap = argparse.ArgumentParser()
@@ -123,6 +168,9 @@ ap.add_argument("--speed", type=float, default=1.0,
                 help="playback rate, 1.0 = real time, 0.05 = 20x slower")
 ap.add_argument("--settle", type=float, default=10.0,
                 help="seconds to settle when using --trim")
+ap.add_argument("--csv", type=Path, metavar="PATH",
+                help="write ground-truth odometry and controls at 20 Hz of simulation time; "
+                     "PATH must not already exist")
 args = ap.parse_args()
 
 FROZEN = args.freeze or args.trim          # live unless a freeze mode was asked for
@@ -222,7 +270,6 @@ brake_actuators = {
 sweep_enabled = args.sweep
 # [smoothed position, velocity, target], in servo radians and simulation seconds.
 brake_states = {a: [float(d.ctrl[a]), 0.0, float(d.ctrl[a])] for a in servos}
-BRAKE_RESPONSE_RATE = 6.64  # critically damped step: 99% settled after 1 second
 
 
 # Keep C callback references alive until the viewer window has been destroyed.
@@ -294,18 +341,9 @@ def advance_brakes(dt):
     Keep velocity across target changes so a quick release stays smooth.
     The physical servo actuator tracks this smoothed control target.
     """
-    rate = BRAKE_RESPONSE_RATE
-    decay = np.exp(-rate * dt)
     for actuator, state in brake_states.items():
         position, velocity, target = state
-        error = position - target
-        slope = velocity + rate * error
-        position = target + (error + slope * dt) * decay
-        velocity = (velocity - rate * slope * dt) * decay
-        lo, hi = m.actuator_ctrlrange[actuator]
-        if position < lo or position > hi:
-            position = float(np.clip(position, lo, hi))
-            velocity = 0.0
+        position, velocity = smooth_brakes(position, velocity, target, dt)
         state[:] = [position, velocity, target]
         d.ctrl[actuator] = position
 
@@ -338,7 +376,16 @@ if args.trim:
 
 mujoco.mj_forward(m, d)
 
-with mujoco.viewer.launch_passive(m, d, key_callback=on_key) as v:
+with ExitStack() as stack:
+    odometry = None
+    if args.csv is not None:
+        try:
+            stream = stack.enter_context(args.csv.open("x", newline=""))
+        except OSError as exc:
+            ap.error(f"cannot create CSV {args.csv}: {exc}")
+        odometry = OdometryCSV(m, stream)
+        print(f"Logging odometry at 20 Hz simulation time to {args.csv.resolve()}")
+    v = stack.enter_context(mujoco.viewer.launch_passive(m, d, key_callback=on_key))
     v.opt.flags[mujoco.mjtVisFlag.mjVIS_TENDON] = True
     v.opt.flags[mujoco.mjtVisFlag.mjVIS_ACTUATOR] = True
     v.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = True
@@ -375,6 +422,8 @@ with mujoco.viewer.launch_passive(m, d, key_callback=on_key) as v:
         print("Brake keys unavailable: this model has no position servo actuators.")
 
     if FROZEN:
+        if odometry is not None:
+            odometry.sample(d, brake_states)
         print(f"FROZEN at the {'trim' if args.trim else 'design'} pose. "
               "Nothing is stepped; dragging moves a body's pose.")
         while v.is_running():
@@ -388,6 +437,8 @@ with mujoco.viewer.launch_passive(m, d, key_callback=on_key) as v:
         PERT = v.perturb
         w = spin_up(m, d, args.thrust)          # set thrust + rpm ONCE
         last_thrust = float(d.ctrl[THRUST])
+        if odometry is not None:
+            odometry.sample(d, brake_states)
         print(f"LIVE at {'real time' if SPEED == 1 else f'{1/SPEED:g}x slower'}. "
               f"thrust {args.thrust:.2f} N, propeller {w*60/(2*np.pi):.0f} rpm.")
         if tracking:
@@ -414,5 +465,7 @@ with mujoco.viewer.launch_passive(m, d, key_callback=on_key) as v:
                 last_thrust = float(d.ctrl[THRUST])
                 sync_prop(m, d, last_thrust)    # keep rpm consistent with thrust
             step()
+            if odometry is not None:
+                odometry.sample(d, brake_states)
             v.sync()
             time.sleep(max(0, wall_per_step - (time.monotonic() - t0)))
