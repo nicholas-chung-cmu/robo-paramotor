@@ -88,6 +88,12 @@ _B = 1.000                       # m, flat span         (build_paramotor.SPAN_FL
 _AR = 5.1                        # flat aspect ratio    (build_paramotor.AR_FLAT)
 _S = _B ** 2 / _AR               # 0.19608 m^2
 _C = _S / _B                     # 0.19608 m, constant-chord approximation
+_CLA = 2.08
+_E = 0.9                        # assumed span efficiency, not identified
+_PAPER_AR = PAPER_ACRA2012["b"] ** 2 / PAPER_ACRA2012["AP"]
+_CDA = (PAPER_ACRA2012["CDa"]
+        - PAPER_ACRA2012["CLa"] ** 2 / (math.pi * _E * _PAPER_AR)
+        + _CLA ** 2 / (math.pi * _E * _AR))
 
 PEEK_1M = dict(
     name="1 m PEEK paramotor",
@@ -107,39 +113,38 @@ PEEK_1M = dict(
     # Lifting line: invert C_La = a0/(1 + a0/(pi e AR)) at the paper's AR=3.985
     # with e=0.9 to get a0=2.432, re-evaluate at AR=5.1.
     CL0=0.4,                        # [PAPER] weakly AR-dependent
-    CLa=2.08,                       # [AR] 2.0 -> 2.08
-    # Induced part of CDa, C_La^2/(pi e AR), falls 0.355 -> 0.277.
-    CDa=0.92,                       # [AR] 1.0 -> 0.92
+    CLa=_CLA,                       # [AR] 2.0 -> 2.08
+    # With the updated lift slope the induced alpha^2 term is 0.300, not
+    # 0.277 (which used the old slope). Keep the assumed residual term fixed.
+    # This decomposition is provisional; it is not a measured drag polar.
+    CDa=_CDA,                       # [AR] 1.0 -> approximately 0.945
     # Re is 2.5x lower (0.87e5), where a 125 um single skin is dominated by
     # laminar separation, and this also absorbs line drag, which differs.
     CD0=0.15,                       # [PROVISIONAL] identify on the vehicle
 
     # --- fuselage drag ---
-    # Only the PRODUCT CD0F*AF is physical.  The paper's is 0.075 m^2: a cage
-    # and pilot this robot does not have.  The pod is a 140 x 110 mm box, so
+    # Only the PRODUCT CD0F*AF is physical. The paper's reference drag area
+    # is 0.075 m^2 on its larger model aircraft. The pod is a 140 x 110 mm box, so
     # 0.0154 m^2 frontal at a bluff-body CD of about 1.0 -> 0.0154 m^2.
     AF=0.140 * 0.110,               # [ROBOT] 0.0154 m^2
-    CD0F=1.0,                       # [ROBOT] bluff box
+    CD0F=1.0,                       # [PROVISIONAL] assumed bluff-box drag
     CDaF=1.0,                       # [PAPER]
 
     # --- pure aerodynamic moments ---
     # Clp and Clphi are used ONLY in mode="lumped".  In the default strip mode
     # the roll moment comes from the panel force distribution and these rows are
     # suppressed (see pure_moments_frd(roll_native=True)).  Strip theory over
-    # the as-built arch measures C_lp = -0.221 in the simulator against the
-    # -0.127 below: strip has no tip relief, and a lifting-line correction of
-    # roughly AR/(AR+4) would close most of the gap.  Documented, not fudged.
+    # the arch generates roll damping; its magnitude depends on the force
+    # reference and section-polar approximation. See test_aero.py for probes.
     Clp=-0.127,                     # [PAPER] lumped mode only
     # CORRECTION to an earlier note here.  This was set to 0 on the argument
     # that the suspension tendons produce the roll restoring moment
     # structurally.  They do not: the tendons produce the GRAVITY pendulum,
     # canopy displaced relative to pod.  The arc's AERODYNAMIC dihedral effect
-    # -- sideslip over a curved lifting surface -- is a separate mechanism, and
-    # with a single lumped force it is produced by nothing at all.  That was
-    # the direct cause of the powered spiral.  Strip mode now generates it from
-    # geometry (C_lbeta = -0.292 /rad, dM/dbeta = -1.26 N.m/rad, so 0.71 deg of
-    # sideslip balances the propeller drag reaction).  In LUMPED mode this is
-    # still missing, which is why lumped mode still spirals under power.
+    # -- sideslip over a curved lifting surface -- is a separate mechanism.
+    # Strip mode generates this coupling from geometry. Earlier negative
+    # C_lbeta reports used FLU-leftward velocity; FRD beta has the opposite
+    # sign. Assess full coupled stability with flight tests, not this term alone.
     Clphi=0.0,                      # [ROBOT] lumped mode only; see above
     Cmq=-2.0,                       # [PAPER] set by l_P/b, which agrees to 16%
     # Cm0 and Cma are set by where the lines attach relative to the aerodynamic

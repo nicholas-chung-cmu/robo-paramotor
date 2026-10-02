@@ -27,12 +27,13 @@ TWO-BODY vs RIGID
 The paper welds canopy and fuselage into one rigid body and therefore needs the
 leverage moments of eq. (17), [S_PB][f_P] and [S_FB][f_F], written out
 explicitly.  This model does not: the canopy and the pod are separate free
-bodies, and MuJoCo's xfrc_applied acts at each body's CENTRE OF MASS (verified,
-not assumed -- see test_aero.py::test_xfrc_acts_at_com).  The paper assumes the
-parafoil aerodynamic centre coincides with the parafoil mass centre and the
-fuselage drag acts at the fuselage mass centre, so both forces land exactly
-where xfrc_applied puts them and eq. (17) emerges through the tendons instead
-of being imposed.  Only the PURE moments of eq. (18) are applied explicitly.
+bodies. The canopy reference is the MASS CENTRE OF ITS WHOLE RIGID SUBTREE:
+the massless canopy root's xipos is not the fourteen-panel assembly mass centre.
+Strip forces act at panel mass centres; lumped force acts at the assembly mass
+centre, following the paper's simplifying force-reference assumption. Fuselage
+drag acts at the pod body's mass centre. mj_applyFT supplies the force leverage
+through the actual application points; only the pure moments are added explicitly.
+These references do not establish the physical canopy's centre of pressure.
 
 LUMPED vs STRIP
 ---------------
@@ -105,30 +106,22 @@ def strip_forces_frd(v_frd, areas, p):
     WHAT THIS BUYS over the lumped form.  Three effects that the single-force
     model cannot produce at all, none of which needs a coefficient:
 
-      * roll damping.  A roll rate tilts the panels differentially.  Strip
-        theory over the as-built arch gives C_lp = -0.170, against the -0.127
-        the paper identified on a 2.15 m wing of different aspect ratio.
-      * the DIHEDRAL EFFECT, C_lbeta = -0.242 /rad.  Sideslip over a curved
-        lifting surface produces a roll restoring moment.  This is what bounds
-        the bank angle against a steady torque -- 0.86 deg of sideslip balances
-        the propeller drag reaction -- and the lumped model produced NONE of
-        it.  The paper folds it into C_lphi, a roll-ANGLE derivative, because
-        on a rigid single body bank and sideslip are locked together in a
-        glide; here they are not, so sideslip is the honest form.
-      * asymmetric brake authority, once section 3.5 lands: pulling one tip
-        changes that panel's incidence, not the whole wing's.
+      * roll damping from different panel velocities during rotation.
+      * sideslip-induced roll moments from the curved surface. Report beta
+        in FRD (positive to the right); a negative derivative measured against
+        FLU leftward velocity has the opposite sign in FRD. A static derivative
+        alone does not establish stability of the coupled wing/payload system.
+      * changes in force distribution when the rigid canopy's attitude changes
+        under brake. Local brake-induced deformation is not represented.
 
-    LIMITATION.  Each strip uses the 3-D, AR-corrected C_Lalpha, so total lift
-    at uniform alpha is exactly right, but roll damping is over-predicted
-    because strip theory has no tip relief.  A lifting-line correction of
-    roughly AR/(AR+4) would bring it back to about the paper's identified
-    -0.127.  Raw strip theory with the 3-D lift slope is standard practice and
-    is what is used here; the residual over-prediction is documented, not
-    fudged, and C_lp is an identification target either way.
+    LIMITATION. Each strip uses a whole-wing, AR-corrected C_Lalpha without
+    spanwise induced-flow coupling or tip relief. Matching total lift does not
+    validate the resulting rate derivatives; C_lp remains an identification
+    target. The paper's derivative on a different aircraft is not ground truth
+    for this geometry.
 
-    p["strip_cl_scale"] multiplies C_L.  ParamotorAero sets it to the ARCH
-    RECOVERY factor -- see ParamotorAero._arch_recovery() for why it is needed
-    and why leaving it at 1.0 silently costs 20% of the lift.
+    p["strip_cl_scale"] multiplies C_L. ParamotorAero defaults it to the
+    provisional arch normalization described in _arch_recovery().
     """
     V = np.linalg.norm(v_frd, axis=1)
     live = V > _EPS_V
@@ -170,9 +163,9 @@ def pure_moments_frd(V_P, omega_frd, alpha, phi, p, roll_native=False):
     C_lphi on top of it would double-count the one effect strip theory exists
     to provide.
 
-    The PITCH row is never native: every panel sits at the same chordwise
-    station, so the panel distribution has no chordwise lever arm and produces
-    no C_mq, C_m0 or C_ma.  Those stay explicit in both modes.
+    Pitch and yaw rows stay explicit in both modes. The arch's vertical offsets
+    also give drag a pitch lever arm and can overlap these derivatives. Their
+    total values, including the panel contributions, remain provisional.
     """
     if V_P < _EPS_V:
         return np.zeros(3)
@@ -257,7 +250,8 @@ class ParamotorAero:
                     "The parameter set and the geometry disagree."
                     % (tot, self.p["AP"], 100 * abs(tot - self.p["AP"]) / self.p["AP"]))
 
-        self.wrench = np.zeros((model.nbody, 6))   # record, world frame, at each CoM
+        # World wrenches at panel/pod CoMs or the canopy assembly CoM.
+        self.wrench = np.zeros((model.nbody, 6))
         self._enabled = True
         self.reset_diagnostics()
 
@@ -270,20 +264,11 @@ class ParamotorAero:
     def _arch_recovery(self, model):
         """sum(A_i) / sum(A_i * n_i.zhat) for the canopy at its rest pose.
 
-        WHY THIS EXISTS.  Strip theory gives each panel lift along ITS OWN
-        normal, so an arched canopy produces less vertical lift than a flat one
-        of the same area -- the projected-area effect.  This model reproduces
-        it exactly from geometry: measured 0.7979 against the generator's
-        PROJ_FRACTION = 0.797, agreement to three decimals, and it is the right
-        physics.
-
-        But it must not be applied TWICE.  The paper's C_L0 = 0.4 and
-        C_Lalpha = 2.0 are referenced to FLAT planform area, measured on a wing
-        that was already arched, so the arch loss is baked into the
-        coefficient.  Making the arch explicit while keeping the wing-referenced
-        coefficient double-counts it and costs 20% of the lift, which shows up
-        as a trim speed 12% too high.  The factor removes the loss from the
-        coefficient so the geometry can supply it instead.
+        Panel lift follows each panel's normal. This factor normalizes the
+        straight-flow vertical lift to the lumped whole-wing coefficient model.
+        It preserves the existing ~1.253 lift multiplier. The paper supplies
+        whole-wing simulation coefficients, not measured section polars or an
+        arch correction, so this is a provisional normalization convention.
 
         Computed at the rest pose, which is valid because the canopy is rigid.
         Pass strip_cl_scale explicitly in the parameter set to override.
@@ -316,12 +301,15 @@ class ParamotorAero:
 
     # -- state extraction ----------------------------------------------------
     def _canopy_state(self, model, data):
-        """(omega_world, v_com_world, R_canopy).  mjOBJ_BODY reports
-        [angular; linear] AT THE BODY CoM, world-aligned."""
+        """World angular velocity and velocity at the rigid assembly CoM."""
         vel = np.zeros(6)
         self._mj.mj_objectVelocity(model, data, self._mj.mjtObj.mjOBJ_BODY,
                                    self.canopy, vel, 0)
-        return vel[:3].copy(), vel[3:].copy(), data.xmat[self.canopy].reshape(3, 3)
+        # mj_objectVelocity reports at xipos, which is only a body reference
+        # for this massless root. Translate to the actual panel-assembly CoM.
+        offset = data.subtree_com[self.canopy] - data.xipos[self.canopy]
+        v_com = vel[3:] + np.cross(vel[:3], offset)
+        return vel[:3].copy(), v_com, data.xmat[self.canopy].reshape(3, 3)
 
     # -- the callback --------------------------------------------------------
     def __call__(self, model, data):
@@ -367,9 +355,11 @@ class ParamotorAero:
 
         # ---- hand the accumulated wrenches to MuJoCo -----------------------
         for bid in np.flatnonzero(np.abs(self.wrench).sum(axis=1) > 0.0):
+            point = (data.subtree_com[self.canopy] if bid == self.canopy
+                     else data.xipos[bid])
             self._mj.mj_applyFT(model, data,
                                 self.wrench[bid, :3], self.wrench[bid, 3:],
-                                data.xipos[bid], int(bid), data.qfrc_passive)
+                                point, int(bid), data.qfrc_passive)
 
         # ---- diagnostics ---------------------------------------------------
         self.n_calls += 1
@@ -388,7 +378,7 @@ class ParamotorAero:
     def _apply_strip(self, data, omega_w, v_com_w):
         ids = self.panels
         R_p = data.xmat[ids].reshape(-1, 3, 3)               # panel -> world
-        r_w = data.xipos[ids] - data.xipos[self.canopy]       # world offsets
+        r_w = data.xipos[ids] - data.subtree_com[self.canopy]
 
         # Rigid body: every panel's CoM velocity follows from the canopy's.
         v_w = v_com_w[None, :] + np.cross(omega_w[None, :], r_w)
