@@ -5,21 +5,39 @@ Covers the canopy and pod aerodynamic layer.
 Actuator lags are not implemented.
 """
 import math
+from functools import lru_cache
 import numpy as np
 import mujoco
 
 import paramotor_aero as A
 import paramotor_params as PP
+from paramotor_control import sync_prop
 
 XML = "paramotor.xml"
 GREEN, RED, DIM, OFF = "\033[32m", "\033[31m", "\033[2m", "\033[0m"
 _results = []
 
 
+class CheckFailure(AssertionError):
+    """A failed aero check, visible to pytest and the standalone runner."""
+
+
 def check(name, ok, detail=""):
     _results.append(ok)
     print(f"  {GREEN+'PASS'+OFF if ok else RED+'FAIL'+OFF}  {name}"
           + (f"\n        {DIM}{detail}{OFF}" if detail else ""))
+    if not ok:
+        raise CheckFailure(f"{name}: {detail}" if detail else name)
+
+
+def _run_tests(*tests):
+    """Continue after reported check failures so the CLI shows the full suite."""
+    for test in tests:
+        try:
+            test()
+        except CheckFailure:
+            # check() already recorded and printed this failure.
+            pass
 
 
 def load():
@@ -175,21 +193,35 @@ def test_double_count_guard():
 
 
 def test_energy_conservation():
-    """B1: with rho = 0 the callback must do no work at all.  Catches any
-    spurious moment or a force applied at the wrong point."""
+    """Zero density must reproduce the no-aero trajectory and computed energy.
+
+    Native constraints/integration can dissipate energy. Comparing identical
+    dynamics isolates aero; asserting conservation of uncomputed zeros did not.
+    """
     m, d = load()
+    m.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_ENERGY
+    reference = mujoco.MjData(m)
     p = dict(PP.PEEK_1M); p["rho"] = 0.0
     aero = A.ParamotorAero(m, p)
     mujoco.set_mjcb_passive(aero)
     try:
         set_airspeed(m, d, [6.0, 0.3, -0.5])
+        reference.qvel[:] = d.qvel
         mujoco.mj_forward(m, d)
         E0 = d.energy.copy()
-        for _ in range(20000):           # 10 s
+        check("energy computation is enabled and nonzero", abs(E0.sum()) > 1.0,
+              f"initial energy {E0.sum():.6f} J")
+        for _ in range(20000):
+            aero.enabled = True
             mujoco.mj_step(m, d)
-        drift = abs((d.energy.sum() - E0.sum()) / max(abs(E0.sum()), 1e-9))
-        check("no spurious work at rho=0 (10 s)", drift < 1e-6,
-              f"relative energy drift {drift:.2e}")
+            aero.enabled = False
+            mujoco.mj_step(m, reference)
+        error = max(np.max(np.abs(d.qpos - reference.qpos)),
+                    np.max(np.abs(d.qvel - reference.qvel)),
+                    np.max(np.abs(d.energy - reference.energy)))
+        check("rho=0 matches disabled aero over 10 s", error < 1e-12,
+              f"max state/energy difference {error:.2e}; native energy change "
+              f"{d.energy.sum()-E0.sum():+.6f} J")
     finally:
         mujoco.set_mjcb_passive(None)
 
@@ -258,6 +290,7 @@ def test_trim_airspeed():
           f"V_trim {V_pred:.3f} m/s (audit: 6.656), lift {L:.4f} N vs weight {W:.4f} N")
 
 
+@lru_cache(maxsize=None)
 def _free_flight(thrust, km_kt=None, T=12.0, mode="strip"):
     """Free flight from 6 m/s level.  Returns (speed, climb rate, max |phi|).
     Speeds come from the CoM trajectory -- cvel's linear part is the velocity
@@ -274,6 +307,7 @@ def _free_flight(thrust, km_kt=None, T=12.0, mode="strip"):
             a = m.jnt_dofadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, nm)]
             d.qvel[a:a + 3] = [6.0, 0.0, 0.0]
         thr = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, "thrust")
+        sync_prop(m, d, thrust)
         hist = []
         for k in range(int(T / m.opt.timestep)):
             d.ctrl[thr] = thrust
@@ -293,8 +327,8 @@ def _probe(omega=(0., 0, 0), vlat=0.0, mode="strip", V=6.0):
     """Hold the canopy in a prescribed motion and read the total aerodynamic
     wrench about its CoM.  MuJoCo's freejoint linear qvel is the velocity of
     the body FRAME ORIGIN, not the CoM, so a pure rotation about the CoM needs
-    the linear term corrected -- otherwise the 0.089 m offset between the two
-    inflates C_lp by 30%."""
+    the linear term corrected. The massless canopy root's xipos is not the
+    welded panel assembly's mass center."""
     m, d = load()
     aero = A.ParamotorAero(m, PP.PEEK_1M, mode=mode)
     mujoco.mj_forward(m, d)
@@ -302,14 +336,14 @@ def _probe(omega=(0., 0, 0), vlat=0.0, mode="strip", V=6.0):
     vcom = np.array([V, vlat, 0.0])
     jc = m.jnt_dofadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, "canopy_free")]
     jp = m.jnt_dofadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, "pod_free")]
-    d.qvel[jc:jc + 3] = vcom - np.cross(w, d.xipos[aero.canopy] - d.xpos[aero.canopy])
+    d.qvel[jc:jc + 3] = vcom - np.cross(w, d.subtree_com[aero.canopy] - d.xpos[aero.canopy])
     d.qvel[jc + 3:jc + 6] = w
     d.qvel[jp:jp + 3] = vcom
     mujoco.mj_forward(m, d)
     aero(m, d)
     M = aero.wrench[aero.canopy, 3:].copy()
     F = aero.wrench[aero.canopy, :3].copy()
-    c = d.xipos[aero.canopy]
+    c = d.subtree_com[aero.canopy]
     for i in aero.panels:
         f = aero.wrench[i, :3]
         F += f
@@ -324,11 +358,12 @@ def test_strip_matches_first_principles():
     p = PP.PEEK_1M
     _, _, aero, m, d = _probe(omega=(0.7, 0.0, 0.0))
     vel = np.zeros(6)
-    mujoco.mj_objectVelocity(m, d, mujoco.mjtObj.mjOBJ_BODY, aero.canopy, vel, 0)
     worst = 0.0
     for k, i in enumerate(aero.panels):
         Rp = d.xmat[i].reshape(3, 3)
-        v_w = vel[3:] + np.cross(vel[:3], d.xipos[i] - d.xipos[aero.canopy])
+        # Independent engine query, not the callback's root-offset formula.
+        mujoco.mj_objectVelocity(m, d, mujoco.mjtObj.mjOBJ_BODY, i, vel, 0)
+        v_w = vel[3:]
         vp = (Rp.T @ v_w) * np.array([1.0, -1.0, -1.0])
         V = np.linalg.norm(vp)
         al = np.clip(math.atan2(vp[2], vp[0]), p["alpha_min"], p["alpha_max"])
@@ -342,11 +377,39 @@ def test_strip_matches_first_principles():
           f"worst panel error {worst:.2e} N over {len(aero.panels)} panels")
 
 
+def test_canopy_mass_center_velocity():
+    _, _, aero, m, d = _probe(omega=(0.7, -0.2, 0.3), vlat=0.4)
+    velocities = []
+    for i in aero.panels:
+        value = np.zeros(6)
+        mujoco.mj_objectVelocity(m, d, mujoco.mjtObj.mjOBJ_BODY, i, value, 0)
+        velocities.append(value[3:])
+    expected = np.average(velocities, axis=0, weights=m.body_mass[aero.panels])
+    _, actual, _ = aero._canopy_state(m, d)
+    check("canopy reference velocity equals mass-weighted panel velocity",
+          np.allclose(actual, expected, atol=1e-12),
+          f"assembly velocity {actual}; root mass {m.body_mass[aero.canopy]:.1f} kg")
+
+
+def test_thrust_wrench_reaches_airframe():
+    m, d = load()
+    sync_prop(m, d, 0.8)
+    mujoco.mj_forward(m, d)
+    spin = m.joint("prop_spin").dofadr[0]
+    pod = m.body("pod").id
+    site = m.site("propeller").id
+    check("thrust site is attached to the airframe", m.site_bodyid[site] == pod)
+    check("thrust reaction does not brake the free rotor",
+          abs(d.qfrc_actuator[spin]) < 1e-12,
+          f"rotor actuator torque {d.qfrc_actuator[spin]:+.3e} N.m")
+    address = m.joint("pod_free").dofadr[0]
+    check("airframe receives the commanded thrust and roll reaction",
+          abs(d.qfrc_actuator[address] - 0.8) < 1e-12
+          and abs(d.qfrc_actuator[address + 3] + 0.8 * 0.0105) < 1e-12)
+
+
 def test_arch_recovery():
-    """An arched canopy lifts on its PROJECTED area.  Strip theory reproduces
-    that from geometry -- but the paper's C_L0 is referenced to FLAT area on a
-    wing that was already arched, so without compensation the loss is applied
-    twice and 20% of the lift disappears."""
+    """Preserve the provisional flat-reference lift normalization."""
     _, _, aero, _, _ = _probe()
     proj = 1.0 / aero.arch_recovery
     check("arch recovery matches PROJ_FRACTION from the generator",
@@ -369,7 +432,8 @@ def test_strip_generates_roll_physics():
     for mode in ("strip", "lumped"):
         M0, _, _, _, _ = _probe(mode=mode)
         Mp, _, _, _, _ = _probe(omega=(1.0, 0, 0), mode=mode)
-        Mb, _, _, _, _ = _probe(vlat=V * math.tan(math.radians(1.0)), mode=mode)
+        # Positive FRD beta points right; world FLU lateral velocity is negative.
+        Mb, _, _, _, _ = _probe(vlat=-V * math.tan(math.radians(1.0)), mode=mode)
         res[mode] = ((Mp - M0)[0] / (q0 * b / (2 * V)),
                      (Mb - M0)[0] / (q0 * math.radians(1.0)),
                      (Mb - M0)[0] / math.radians(1.0))
@@ -377,16 +441,16 @@ def test_strip_generates_roll_physics():
     Clp_l, Clb_l, _ = res["lumped"]
     check("strip roll damping exceeds the lumped coefficient",
           Clp_s < Clp_l < 0, f"C_lp: strip {Clp_s:+.4f} vs lumped {Clp_l:+.4f} "
-          f"({Clp_s/Clp_l:.2f}x); analytic strip prediction -0.213")
-    check("strip generates the dihedral effect; lumped generates none",
-          Clb_s < -0.15 and abs(Clb_l) < 1e-9,
+          f"({Clp_s/Clp_l:.2f}x)")
+    check("arched strips generate FRD sideslip-roll coupling",
+          Clb_s > 0.15 and abs(Clb_l) < 1e-9,
           f"C_lbeta: strip {Clb_s:+.4f} vs lumped {Clb_l:+.4f}; "
           f"dM/dbeta = {dMdb_s:+.3f} N.m/rad")
     Q = 1.5 * 0.0105
-    check("dihedral bounds the bank against propeller torque",
+    check("sideslip moment scale exceeds the prop torque scale",
           math.degrees(Q / abs(dMdb_s)) < 3.0,
           f"{math.degrees(Q/abs(dMdb_s)):.2f} deg sideslip balances {Q:.4f} N.m "
-          f"(lumped: unbounded, no restoring term at all)")
+          f"(static scale comparison, not a bank-stability proof)")
 
 
 def test_unpowered_glide():
@@ -397,69 +461,63 @@ def test_unpowered_glide():
           f"(itemized_spec assumes 2-3)")
 
 
-def test_strip_fixes_the_spiral():
-    """The headline result.  At 0.5 N the lumped model rolls off to 63 deg and
-    dives; strip theory holds it level, with the propeller torque balanced by
-    sideslip instead of integrating into bank."""
+def test_powered_bank_acceptance():
+    """Acceptance target: strips improve roll response and hold near level.
+
+    This currently fails with the viewer's propeller spin included. Keep the
+    failure visible rather than asserting that a static derivative proves trim.
+    """
     V_l, w_l, phi_l = _free_flight(0.5, T=16.0, mode="lumped")
     V_s, w_s, phi_s = _free_flight(0.5, T=16.0, mode="strip")
-    check("strip mode removes the powered spiral", phi_l > 25.0 and phi_s < 5.0,
+    check("powered strip flight stays within 5 deg bank", phi_s < phi_l and phi_s < 5.0,
           f"0.5 N over 16 s: lumped |phi|max {phi_l:.0f} deg ({w_l:+.2f} m/s) -> "
           f"strip |phi|max {phi_s:.1f} deg ({w_s:+.2f} m/s)")
 
 
 def test_powered_climb():
-    """1.0 N buys climb with the propeller torque left ON -- the lumped model
-    needed the torque deleted to achieve this."""
+    """Acceptance target: approximately level or climbing flight at 1 N."""
     V, w, phi = _free_flight(1.0, T=20.0)
-    check("1.0 N thrust climbs with prop torque intact", w > -0.2 and phi < 10.0,
+    check("1.0 N has bounded bank and no significant descent", w > -0.2 and phi < 10.0,
           f"{w:+.2f} m/s at {V:.2f} m/s, |phi|max {phi:.1f} deg")
 
 
 def test_validated_thrust_envelope():
-    """Pins the UPPER EDGE of the validated envelope, so it cannot drift
-    unnoticed.  Not a defect: the spiral is gone across the thrust range the
-    vehicle is meant to fly, and departure beyond it is accepted.
+    """Reject the old 0..1 N envelope claim if powered flight fails acceptance.
 
-    Above roughly 1.0 N (T/W = 0.31) the vehicle pitches up, the tension-only
-    suspension goes fully slack and the canopy tumbles; alpha reaches +-180 deg,
-    far outside the +-8/+18 deg envelope where a linear no-stall C_L means
-    anything.  Established NOT to be:
-      * a thrust-line offset -- moving the prop from z=0.010 to the CG at
-        z=0.126 does not help;
-      * a step-input artifact -- ramping with the section 3.6 motor lag
-        (tau = 0.45 s) does not help.
-    It needs a stall model and a rigging re-trim, both existing plan items.
-    Note the lumped model was ALREADY failing above 0.5 N, as a dive rather
-    than a tumble, so strip theory did not introduce this -- it widened the
-    usable thrust range from about 0 to about 1.0 N.
+    The high-thrust run is diagnostic only. Departure is not a desired behavior
+    to pin as a regression, and its cause is not identified by this test.
     """
     _, _, phi_lo = _free_flight(1.0, T=20.0)
     _, _, phi_hi = _free_flight(1.8, T=16.0)
-    check("validated envelope is 0 to ~1.0 N thrust", phi_lo < 10.0 and phi_hi > 30.0,
-          f"1.0 N -> |phi|max {phi_lo:.1f} deg (good); 1.8 N -> {phi_hi:.0f} deg "
-          f"(departs; needs stall + rigging trim)")
+    check("1.0 N satisfies the proposed flight-envelope bank limit", phi_lo < 10.0,
+          f"1.0 N -> |phi|max {phi_lo:.1f} deg; diagnostic 1.8 N -> {phi_hi:.0f} deg")
+
+
+def main():
+    _results.clear()
+    print("\n\033[1maero layer -- plan sections 3.3 and 3.4\033[0m\n")
+    print(" prerequisites (3.1)")
+    _run_tests(test_fluid_model_is_off, test_xfrc_acts_at_com, test_ballistic_without_aero)
+    print("\n frame handling (3.3)")
+    _run_tests(test_frame_roundtrip, test_double_count_guard)
+    print("\n parafoil lift and drag (3.4)")
+    _run_tests(test_static_lift, test_paper_static_lift, test_alpha_clamp)
+    print("\n pure moments (3.4)")
+    _run_tests(test_moment_signs, test_pitch_stiffness)
+    print("\n end to end")
+    _run_tests(test_energy_conservation, test_lift_actually_supports_it,
+               test_lift_drag_decomposition, test_trim_airspeed)
+    print("\n strip theory (option 3)")
+    _run_tests(test_strip_matches_first_principles, test_canopy_mass_center_velocity,
+               test_thrust_wrench_reaches_airframe, test_arch_recovery,
+               test_strip_generates_roll_physics)
+    print("\n free flight")
+    _run_tests(test_unpowered_glide, test_powered_bank_acceptance, test_powered_climb,
+               test_validated_thrust_envelope)
+    n, tot = sum(_results), len(_results)
+    print(f"\n{(GREEN if n==tot else RED)}{n}/{tot} passed{OFF}\n")
+    return 0 if n == tot else 1
 
 
 if __name__ == "__main__":
-    print("\n\033[1maero layer -- plan sections 3.3 and 3.4\033[0m\n")
-    print(" prerequisites (3.1)")
-    test_fluid_model_is_off(); test_xfrc_acts_at_com(); test_ballistic_without_aero()
-    print("\n frame handling (3.3)")
-    test_frame_roundtrip(); test_double_count_guard()
-    print("\n parafoil lift and drag (3.4)")
-    test_static_lift(); test_paper_static_lift(); test_alpha_clamp()
-    print("\n pure moments (3.4)")
-    test_moment_signs(); test_pitch_stiffness()
-    print("\n end to end")
-    test_energy_conservation(); test_lift_actually_supports_it()
-    test_lift_drag_decomposition(); test_trim_airspeed()
-    print("\n strip theory (option 3)")
-    test_strip_matches_first_principles(); test_arch_recovery()
-    test_strip_generates_roll_physics()
-    print("\n free flight")
-    test_unpowered_glide(); test_strip_fixes_the_spiral(); test_powered_climb()
-    test_validated_thrust_envelope()
-    n, tot = sum(_results), len(_results)
-    print(f"\n{(GREEN if n==tot else RED)}{n}/{tot} passed{OFF}\n")
-    raise SystemExit(0 if n == tot else 1)
+    raise SystemExit(main())

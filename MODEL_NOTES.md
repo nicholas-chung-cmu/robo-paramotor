@@ -8,15 +8,15 @@ build_paramotor.py    generator -> paramotor.xml + scene.xml   (edit THIS, not t
 paramotor.xml         the model: geometry, mass, tendons, actuators
 paramotor_params.py   aero COEFFICIENTS                        (edit for tuning)
 paramotor_aero.py     aero MODEL, eqs. (8)-(18)                (edit for physics)
-test_aero.py          38 assertions on the aero layer
+test_aero.py          implementation checks and flight acceptance
 view_paramotor.py     interactive viewer, tendons forced visible
 ```
 
 
 ```bash
 # look at it (macOS needs mjpython: the viewer must own the main thread)
-./view.sh                      # live, strip aero, 1.5 N, camera tracks the pod
-./view.sh --thrust 0.8         # inside the validated envelope
+./view.sh                      # live, strip aero, default 0.8 N, tracks the pod
+./view.sh --thrust 0           # unpowered glide baseline
 ./view.sh --aero lumped        # the paper's single-force model, for comparison
 ./view.sh --aero off           # no aero: confirms it falls ballistically
 ./view.sh --sweep              # brakes cycling
@@ -47,190 +47,141 @@ the itemised BOM's 325.40 g (the suite asserts it), 74.6 g under the ceiling.
 
 ## 5. Propulsion and actuator drive modes
 
-Rotor follows `mujoco_menagerie/skydio_x2`: one site actuator produces thrust and
-the propeller drag reaction together via `gear`, declared in one line with the
-limits carried by a `<default>` class:
+The default model has three actuators: `thrust`, `servo_pos_L`, `servo_pos_R`.
+Thrust is in newtons (0–2 N); brakes are arm angles (0–3 rad), with a 0.275 N·m
+torque cap. Torque/both servo modes remain generator options.
 
-```xml
-<motor    class="prop"      name="thrust"          site="propeller" gear="0 0 1 0 0 -0.0105"/>
-<velocity class="spin"      name="propeller_speed" joint="prop_spin"/>
-<position class="servo_pos" name="servo_pos_L"     joint="drum_L"/>
-```
+`paramotor_control.sync_prop()` sets thrust and matching rotor speed. The viewer
+and MJX resynchronize speed when thrust changes. `prop_spin` is a free hinge,
+not a velocity actuator; its disk inertia supplies native gyroscopic coupling.
+`T = K_T omega²` assumes 10,000 rpm at 4.02 N and needs identification. This is
+direct simplified thrust rather than a motor/ESC or advance-ratio model.
 
-### Actuator count
-
-**4 actuators — `thrust`, `propeller_speed`, `servo_pos_L`, `servo_pos_R`**.
-`propeller_speed` is not a second motor; it is the propeller's spin state.
-
-```
---servo-mode position  (default)  thrust + propeller_speed + servo_pos_L/R  -> 4
---servo-mode torque               thrust + propeller_speed + servo_tau_L/R  -> 4
---servo-mode both                 both servo channels per side              -> 6
-```
-
-With `both`, drive one channel and leave the other's `ctrl` at 0 — MuJoCo sums
-actuators on the same joint. The torque channel exists for the ~200 Hz torque
-loop the spec assumes, and applies exactly the commanded N·m.
-
-Two deliberate numbers to revisit:
-
-* `forcerange = ±2.0 N·m` implements the spec's "cap the torque rating at a very
-  high amount by default". Datasheet stall at 7.4 V is **0.275 N·m** — set
-  `SERVO_TAU_CAP = 0.275` for the real actuator.
-* `SERVO_ARMATURE = 5e-5 kg·m²` stands in for gearbox-reflected rotor inertia.
-  The bare drum is ~6e-8 kg·m², numerically explosive against any realistic
-  torque cap; without it the servo oscillated at the force limit and the capstan
-  constraint broke down by 1.7 mm. An **identification parameter, not a datasheet
-  value** — get it from a bench step response.
-
-### Propeller gyroscopics — native, via a real spin DOF
-
-Generated *inside the model*, the way the skydio example keeps propeller physics
-in the MJCF rather than a Python callback. The propeller carries a real spin
-joint and takes its inertia straight from the disk geom:
-
-```xml
-<body name="propeller" pos="-0.1160 0 0.010">
-  <joint name="prop_spin" type="hinge" axis="1 0 0" limited="false"/>
-  <geom name="prop_disk" type="cylinder" size="0.10160 0.0015" mass="0.005" .../>
-</body>
-```
-
-MuJoCo's own Coriolis terms then produce `M = -(ω_body × H)`. Verified against
-theory at **0.00% error**, appearing on the pitch axis from a yaw rate as it must.
-
-| thrust | rpm | H | gyro M at 1 rad/s | prop drag torque |
-|---:|---:|---:|---:|---:|
-| 1.0 N | 4988 | 0.0135 | 0.0135 N·m | 0.0105 N·m |
-| 4.0 N | 9975 | 0.0270 | 0.0270 N·m | 0.0420 N·m |
-
-Same order as the drag reaction, on a vehicle that pitches and yaws under brake.
-
-* Inertia is the **solid disk** `m·R²/2 = 2.58e-5 kg·m²`, taken from the geom.
-  At the design speed (~250 rev/s) the two-blade transverse asymmetry averages
-  out, so an axisymmetric disk is the right idealisation. About the *spin* axis
-  it is 1.5× a uniform two-blade rod (`m·D²/12 = 1.72e-5`), so H and the
-  gyroscopic moment are slightly overstated — conservative for control design.
-* **Bookkeeping:** drag torque reaches the airframe through the thrust actuator's
-  `gear`, *not* the spin joint, so the velocity servo settles at ~0 torque and
-  the reaction is not double counted.
-* Thrust and rotor speed are one physical thing — `thrust` alone gives force with
-  no angular momentum and so no gyroscopic moment. Use
-  **the `sync_prop()` helper inlined in the scripts** (or `spin_up()` to skip the ~0.1 s
-  spin-up). `k_T` is anchored on the static bench point at an assumed 10 krpm —
-  **re-fit it from a thrust stand.**
-
-**Blade centrifugal force is deliberately not modelled.** On a balanced
-axisymmetric propeller the root tensions cancel exactly: zero net force and moment on
-the airframe. It is a blade-root structural load — hub retention, the spec's
-"positive retention compatible with the 3 mm shaft" — not vehicle dynamics.
-A 1P imbalance shake force is no longer provided; add it locally if the IMU
-isolation question; its unbalance figure is a guess.
-
----
+The `propeller` actuator site belongs to the **pod**, at the propeller location,
+with `gear="0 0 1 0 0 -0.0105"`. Thrust and drag reaction act on the airframe.
+Previously the site belonged to the free rotor: its drag torque drove the rotor
+backwards under constant positive thrust. The corrected site preserves geometry
+and inertia, without forcing rotor speed each timestep to hide that torque error.
 
 ## 6. Aerodynamics — explicit coefficient model
 
-**The ellipsoid fluid model is gone.** Lift and drag now come from an explicit
-coefficient model after Umenberger & Göktoğan 2012 (`pap151.pdf`), eqs. (8)–(18),
-applied through `xfrc_applied`:
+Reduced aerodynamics follow Umenberger & Göktoğan 2012 (`pap151.pdf`, equations
+8–18), with coefficients provisionally adapted to this 0.325 kg, 1 m vehicle.
+The paper's aircraft is a 1.55 kg, 2.15 m model paramotor, not a pilot-carrying
+trike or a geometrically similar version of this robot.
 
+`paramotor_params.py` supplies coefficients, `paramotor_aero.py` is the native
+callback, and `paramotor_mjx.py` supplies the same strip model for training.
+Native forces use `qfrc_passive` via `mj_applyFT`; MJX supplies equivalent
+`xfrc_applied` wrenches. Built-in fluid density and viscosity remain zero.
+
+Default strips apply linear lift and quadratic drag to fourteen rigid panels
+at their local velocities and orientations. Panel forces produce roll moments,
+so an additional lumped roll-damping term is suppressed. Explicit pitch/yaw
+moments remain provisional because panel forces also contribute those moments.
+Pod drag is separate. Brakes act mechanically through servo arms and tendons;
+there is no local camber change or brake-specific aerodynamic coefficient.
+`mode="lumped"` remains available for comparison.
+
+### References and assumptions corrected in this review
+
+The massless `canopy` root's `xipos` is not the assembly mass center: initial
+z = 1.260 m versus the actual panel-assembly z = 0.54136 m. Canopy reference
+velocity, lumped force point, and total-moment probes now use
+`subtree_com[canopy]`; strip forces remain at panel mass centers. This corrects
+force/moment bookkeeping and does not introduce a measured center of pressure.
+
+The existing drag adjustment now uses the updated robot lift slope:
+`CDa_robot = CDa_paper - CLa_paper²/(pi e AR_paper) + CLa_robot²/(pi e AR_robot)`.
+For assumed e = 0.9 and CLa_robot = 2.08, CDa is approximately 0.945, previously
+0.92. This decomposition is provisional, not an identified drag polar.
+
+The geometry-derived arch normalization (1.2533) is retained to preserve the
+existing flat-reference lift. Level-flow strip/lumped lift agreement does not
+validate transferring the paper's coefficients to this canopy. The paper does
+not establish this normalization for the robot. Alpha clipping to −8°..+18° is
+an envelope guard, **not a stall model**.
+
+### October 2026 verification and remaining flight failures
+
+MuJoCo/MJX 3.13.0 checks used CPU execution. Mass remains 325.40 g with three
+actuators, eight suspension lines, and two brake tendons. Corrected 6 m/s probes
+give C_lp = −0.2337 and C_lbeta = +0.3034/rad. Positive beta is rightward FRD
+velocity; earlier negative reports used leftward FLU velocity. A static sideslip
+derivative does not establish bank stability in the coupled vehicle.
+
+Twelve-second neutral-brake runs start at 6 m/s with matching rotor speed.
+Maximum bank and alpha excursions are measured after the initial four seconds;
+an excursion means any panel exceeds the coefficient envelope.
+
+| Thrust | Maximum bank | Final rotor speed | Steps outside envelope |
+|---:|---:|---:|---:|
+| 0 N | <0.001° | approximately 0 rad/s | 0% |
+| 0.8 N | 26.6° | 467.04 rad/s | 0% |
+| 1.0 N | 39.6° | 522.13 rad/s | 0% |
+| 1.7 N | 152.9° | 681.77 rad/s | 28.6% |
+| 1.8 N | 152.1° | 701.02 rad/s | 18.0% |
+
+Unpowered glide remains approximately 5.76 m/s, sink 1.86 m/s, L/D 2.93.
+At 0.8 N the original rotor went from +467 to −3439 rad/s in twelve seconds;
+corrected routing preserves positive spin. Powered neutral flight develops a
+sustained turn. Left, right, and symmetric 1 rad pulls during seconds 4–8 at
+0.8 N remain finite, but neutral turning dominates and some pulls exceed the
+alpha envelope. These runs do not establish bidirectional steering or tracking.
+
+All ten existing RL regression tests pass, including native/MJX force,
+acceleration, sensor, and short-rollout parity. Aero checks now query panel
+velocities independently, test torque routing, and compare rho=0 with disabled
+aero using computed energy; the original energy check passed on zeros.
+
+**The old claim of a validated 0–1 N powered flight envelope is withdrawn.**
+Three flight acceptance checks fail with correct reaction torque and the viewer's
+rotor initialization. `test_aero.py` intentionally returns failure until these
+targets are met. The same failed checks also fail under `pytest`; the standalone
+runner continues after reported failures to show the full summary.
+`test_aero_reporting.py` verifies process exit codes using deliberately failing
+flight measurements and checks that the standalone runner continues afterward.
+Implementation/parity success does not validate powered trim.
+RL's available 1.7 N thrust also exceeds the envelope in these neutral runs;
+its control range has not been changed.
+
+Next work is to diagnose powered trim, reaction-torque balance, and brake
+authority within the reduced model. This review does not establish the cause
+of high-thrust departure or prove that a stall model, flexible canopy, or new
+rigging is required. No brake law, vehicle redesign, or PPO changes are included.
+
+### Run locally on Windows
+
+From PowerShell in the repository, the installed environment can run:
+
+```powershell
+.\.venv-rl\Scripts\python.exe test_aero.py
+.\.venv-rl\Scripts\python.exe -m pytest test_aero.py test_aero_reporting.py -q
+.\.venv-rl\Scripts\python.exe -m pytest test_rl.py -q
+.\.venv-rl\Scripts\python.exe view_paramotor.py --thrust 0
+.\.venv-rl\Scripts\python.exe view_paramotor.py --thrust 0.8
 ```
-paramotor_aero.py     the model. Pure functions in the paper's FRD frame,
-                      plus a ParamotorAero callback that binds to MuJoCo.
-paramotor_params.py   PAPER_ACRA2012 and PEEK_1M, identical keys.
-test_aero.py          32 assertions.
-paramotor_model_alignment.pdf   why, and what was NOT transferred.
+
+The viewer opens a window: Up/Down changes thrust, Left/Right pulls brakes, and
+release commands zero brake. Start with the unpowered baseline; powered runs
+demonstrate the unresolved turn. No GPU is required for these checks.
+
+For a fresh viewer-only installation with an installed Python 3.12:
+
+```powershell
+python -m venv .venv-viewer
+.\.venv-viewer\Scripts\python.exe -m pip install mujoco==3.13.0 numpy==2.5.3
+.\.venv-viewer\Scripts\python.exe view_paramotor.py --thrust 0
 ```
 
-```python
-aero = ParamotorAero(model, paramotor_params.PEEK_1M)
-mujoco.set_mjcb_passive(aero)
-```
-
-`<option density="0" viscosity="0">` and no `fluidshape` anywhere: MuJoCo's own
-fluid model would otherwise be added on top and every force counted twice. The
-constructor refuses to run if either is non-zero.
-
-**`CANOPY_FLUIDCOEF` is deleted, not translated.** The ellipsoid primitive has no
-C_L0, no C_Lα and no rate derivatives — it is a different *function*, not a
-different parameterisation of the same one.
-
-**The paper's aircraft is not a scale model of this one** (1.55 kg / 2.15 m vs
-0.325 kg / 1.0 m), so most of its Table 1 does not transfer. Relative density
-μ = m/(ρAb) goes 0.507 → 1.355 and Froude 1.691 → 4.516, both 2.67×; Reynolds
-falls to 0.41×; flat AR rises 3.99 → 5.10. Identical coefficients therefore do
-**not** give identical dynamics: at the same C_lp the non-dimensional roll
-damping is 3.5× weaker here. Seven coefficients were carried over, nine must be
-identified on the vehicle. Each entry in `paramotor_params.py` is tagged
-`[PAPER]`, `[AR]`, `[ROBOT]` or `[PROVISIONAL]`.
-
-**Never copy the paper's inertia tensor.** Its I_xz is 18% of I_xx (a
-pilot-carrying trike); this robot's is 0.5% — it is nearly symmetric. MuJoCo
-accumulates the real tensor from the BOM and that is better information.
-
-Current behaviour: unpowered glide 5.47 m/s, sink 1.69 m/s, **L/D 3.07** (the
-spec assumes 2–3). The pod now has drag at all — 0.340 N at 6 m/s, 11% of
-weight, previously zero.
-
-### Strip theory over the panels (default)
-
-`mode="strip"` applies lift and drag to **each of the fourteen panels
-separately** instead of as one lumped force at the canopy CoM. Because the
-canopy is arched, every panel sees a different local incidence, and three
-effects fall out of the geometry with no coefficient to identify:
-
-| | lumped | strip | note |
-|---|---:|---:|---|
-| C_lp | −0.127 | **−0.221** | 1.74× the damping |
-| C_lβ | 0 | **−0.292 /rad** | was produced by *nothing* |
-| dM/dβ | 0 | **−1.26 N·m/rad** | 0.71° sideslip balances prop torque |
-| total lift | 1.729 N | 1.727 N | preserved, see arch recovery |
-
-**This fixed the powered spiral.** At 0.5 N the lumped model rolls to 63° and
-dives; strip holds 0.1° and glides. At 1.0 N it now *climbs* with the propeller
-drag reaction left intact — the lumped model needed the torque deleted to
-manage that.
-
-The mechanism was a roll *restoring* moment, not more damping. Damping against a
-steady torque gives a steady roll **rate**, so bank grows without bound; the
-arc's dihedral effect bounds it instead.
-
-**Arch recovery.** An arched canopy lifts on its *projected* area, and strip
-theory reproduces that from geometry exactly — measured 0.7979 against the
-generator's `PROJ_FRACTION = 0.797`. But the paper's C_L0 is referenced to
-**flat** area on a wing that was already arched, so the loss is inside the
-coefficient; applying the arch again costs 20% of the lift. `arch_recovery`
-(1.2533, computed from the geometry, not hard-coded) removes it from the
-coefficient so the geometry can supply it.
-
-`mode="lumped"` keeps the paper's single-force form and is what the rigid
-replication of the paper's aircraft must use, since that model has no panels.
-
-### Open: departure above ~1.0 N thrust
-
-Usable thrust range is **0 to about 1.0 N** (T/W 0.31). Above it the vehicle
-pitches up, the tension-only suspension goes fully slack (20/20 lines) and the
-canopy tumbles, with α reaching ±180° — far outside the ±8/+18° envelope where a
-linear no-stall C_L means anything. Established *not* to be a thrust-line offset
-(moving the prop from z=0.010 to the CG at z=0.126 does not help) and *not* a
-step-input artifact (ramping with the §3.6 motor lag τ=0.45 s does not help).
-Needs a stall model and a rigging re-trim. Note the lumped model was already
-failing above 0.5 N as a dive, so strip theory did not introduce this — it
-widened the usable range. `test_departure_above_one_newton_is_known` pins it.
-
-### Still not modelled
-
-Brake-specific aerodynamics (eqs. 20–22). No additional brake force is applied: the paper's Table 1 gives C_lδa = +0.0021 while its own §3.2
-identifies −0.2959 — 140× and a sign flip — and those belong to a d/b = 0.186
-brake cascade, where this robot pulls one tendon at one corner of one tip panel.
-The brake chain is still purely geometric. Stall is not modelled by the paper
-either; α is clamped to [−8°, +18°] and excursions are counted
-(`aero.envelope_report()`).
+See `RL.md` for the larger training environment. On this Windows host, installing
+all requirements hit a long-path error in an Orbax test fixture; installing the
+remaining MJX/Flax/Optax wheels supplied the imports needed for the ten checks.
+Full training dependencies and GPU execution were not verified in this review.
 
 ## 7. Closer-to-reality canopy models
 
-The canopy is **rigid**: one free body, seven welded panels. Cheap, stable, gets
+The canopy is **rigid**: one free body, fourteen welded panels. Cheap, stable, gets
 the gross pendulum dynamics right. It cannot do camber change under brake, tip
 twist, spanwise load redistribution, collapse or cravat — which for a single-skin
 PEEK wing is precisely the unknown the spec flags.
@@ -320,8 +271,8 @@ quickest way to confirm the brake lines actually move.
 * Suspension is eight lines to four pod hardpoints; a real cascade has more lines
   and A/B/C rows. Brakes attach at one trailing-edge point per side; a real brake
   cascade spreads over several. Add parallel tendons from the same origin site.
-* The brake coupling is bilateral, so brake commands are pull-only. A released
-  brake line does not go slack the way a real one does.
+* Brake tendons are tension-only length limits and can go slack on release.
+  They act on a rigid canopy, so they cannot change local camber or tip twist.
 * Collision is disabled throughout (`contype=0 conaffinity=0`). No ground, no
   launch, no landing.
 * Aerodynamic load on the lines is not modelled. The pod now has drag (§6);
