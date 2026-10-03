@@ -27,7 +27,7 @@ from rl.rl_env import EnvConfig, ParamotorEnv
 @dataclass
 class PPOConfig:
     seed: int = 0
-    num_envs: int = 64
+    num_envs: int = 4096  # sized for a 16 GB desktop GPU; lower on laptops (see docs/RL.md)
     rollout_steps: int = 128
     updates: int = 1000
     epochs: int = 4

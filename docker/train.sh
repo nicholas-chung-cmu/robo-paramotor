@@ -2,7 +2,7 @@
 # Train, evaluate and analyze PPO policies inside the Docker image.
 #
 #   docker/train.sh                                  # one run, named ppo-<timestamp>
-#   docker/train.sh --name first --updates 2000 --num-envs 256
+#   docker/train.sh --name first --updates 2000 --num-envs 2048
 #   docker/train.sh --name first --resume --updates 1000   # continue runs/first
 #   docker/train.sh --name baseline --seeds 5 --updates 500  # runs/baseline/seed0..4
 #   docker/train.sh --compare baseline high_lr       # rliable comparison of configs

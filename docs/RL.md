@@ -44,7 +44,7 @@ trains, evaluates on the fixed routes and writes plots, all into `runs/<name>/`:
 
 ```bash
 docker/train.sh --smoke                                  # ~1 min end-to-end check
-docker/train.sh --name first --num-envs 256 --updates 2000
+docker/train.sh --name first --updates 2000
 docker/train.sh --name first --resume --updates 1000     # continue the same run
 docker/train.sh --analyze first                          # re-plot, also mid-training
 docker/train.sh --name baseline --seeds 5 --updates 500  # runs/baseline/seed0..4
@@ -69,7 +69,7 @@ docker compose -f docker/compose.yaml run --rm rl   # prints [CudaDevice(id=0)]
 # Every command from "Run" below works the same way, prefixed:
 docker compose -f docker/compose.yaml run --rm rl python -m pytest tests/test_rl.py -q
 docker compose -f docker/compose.yaml run --rm rl python -m rl.train --smoke --output runs/smoke
-docker compose -f docker/compose.yaml run --rm rl python -m rl.train --num-envs 256 --updates 1000 --output runs/first
+docker compose -f docker/compose.yaml run --rm rl python -m rl.train --updates 1000 --output runs/first
 ```
 
 The repo is mounted at `/workspace`, so code edits take effect without a rebuild
@@ -110,8 +110,11 @@ python -m tests.test_aero
 # Compile and exercise rollout, optimization, and checkpoint writing.
 python -m rl.train --smoke --output runs/smoke
 
-# Initial training run. Start small on a laptop; increase after measuring memory.
-python -m rl.train --num-envs 64 --updates 1000 --output runs/first
+# Initial training run (4096 parallel environments by default).
+python -m rl.train --updates 1000 --output runs/first
+
+# On a laptop GPU, start smaller and increase after measuring memory.
+python -m rl.train --num-envs 256 --updates 1000 --output runs/first
 
 # Continue for another 1000 updates, keeping weights, optimizer and curriculum.
 python -m rl.train --resume runs/first/checkpoint.pkl --updates 1000 --output runs/first
@@ -147,9 +150,13 @@ writes per-step `flights.csv`, per-flight `summary.csv` and the target `routes.c
 how long each flight survived. Compare returns together with distance traveled,
 tracking error, failure rate and time outside the aerodynamic envelope.
 
-The defaults use 64 environments and 128 control steps per PPO rollout. This is a
-starting point for a 6–8 GB laptop GPU, not a guaranteed memory or speed budget.
-Reduce `--num-envs` to 16 or 32 if needed; try 128/256 once the smaller run works.
+The defaults use 4096 environments and 128 control steps per PPO rollout, sized
+for a 16 GB desktop GPU (RTX 5080). Each step's physics is tiny, so a small batch
+leaves the GPU mostly idle: time per update is set by the 10,240 sequential
+physics substeps per rollout, and more environments add data at little extra
+time until the GPU saturates. On a 6–8 GB laptop GPU use `--num-envs 256` or
+lower. One update now collects 4096 x 128 = 524,288 samples, so compare runs by
+environment steps, not by update count.
 JAX preallocation is disabled by the entry points. Compiled programs are cached
 under `runs/.jax_cache` so repeated launches can reuse them. Set
 `JAX_COMPILATION_CACHE_DIR` to choose a different location. Changing environment count,
@@ -184,7 +191,7 @@ only what you need through JSON, without editing code:
     "gps_latency_s": 0.0,
     "gps_dropout": 0.0
   },
-  "ppo": {"num_envs": 64, "rollout_steps": 128, "updates": 1000}
+  "ppo": {"num_envs": 4096, "rollout_steps": 128, "updates": 1000}
 }
 ```
 
