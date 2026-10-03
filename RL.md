@@ -91,11 +91,12 @@ only what you need through JSON, without editing code:
     "control_hz": 25,
     "sensor_hz": 100,
     "gps_hz": 5,
+    "history_hz": 25,
     "history_seconds": 1.0,
     "episode_seconds": 60.0,
     "curriculum": true,
-    "thrust_max": 1.7,
-    "noise_std": {"gyro": [0.0, 0.0, 0.0], "accel": 0.0, "pod_pos": 0.0},
+    "thrust_max": 1.0,
+    "noise_std": {"gyro": [0.0, 0.0, 0.0], "accel": 0.0, "gps_pos_xy": 0.0},
     "bias_std": {"gyro": 0.0},
     "bias_walk_std": {"gyro": 0.0},
     "gps_latency_s": 0.0,
@@ -111,52 +112,56 @@ configuration stored in the checkpoint; CLI overrides still apply.
 
 ## Observations and actions
 
-All 13 XML sensors (30 values) are retained in XML order. Each 100 Hz observation
-frame adds GPS age and a fresh-fix flag. The policy receives the last second of
-these frames, five route preview points and the previous action/filter velocity:
-3,220 inputs with the defaults. History is filled with the first reading at reset.
-The network has separate actor and critic MLPs, each with two 128-unit tanh layers.
-It has no recurrent state.
+The policy sees only what the vehicle can measure. `sensors.csv` lists every
+sensor: part, units, rate, white-noise σ, per-episode bias σ, the datasheet figure
+each value comes from, and the channels deliberately left out. It is the single
+source of truth: `EnvConfig.noise_std` and `bias_std` default to its values, and
+`test_rl.py` checks that the CSV and the environment agree.
 
-| Sensor | Units | Update rate |
-| --- | --- | --- |
-| `pod_quat` | quaternion, wxyz | 100 Hz |
-| `gyro` | rad/s, IMU frame | 100 Hz |
-| `accel` | m/s², IMU specific force | 100 Hz |
-| `mag` | model magnetic-field units, IMU frame | 100 Hz |
-| `vel_body` | m/s, IMU frame | 100 Hz |
-| `pod_pos` | m, world coordinates | 5 Hz GPS |
-| `pod_vel` | m/s, world coordinates | 5 Hz GPS |
-| `pod_angvel` | rad/s, world frame | 100 Hz |
-| `prop_omega` | rad/s | 100 Hz |
-| `arm_pos_L`, `arm_pos_R` | rad | 100 Hz |
-| `brake_len_L`, `brake_len_R` | m | 100 Hz |
+| Frame entry | Source | Rate | Size |
+| --- | --- | --- | --- |
+| estimated attitude, 6-D (first two columns of R) | estimator from IMU + compass | 100 Hz | 6 |
+| `gyro` | LSM6DSOX | 100 Hz | 3 |
+| `accel` | LSM6DSOX | 100 Hz | 3 |
+| `mag` | QMC5883L | 100 Hz | 3 |
+| GNSS horizontal position | GM10 Pro V3 (u-blox M10) | 5 Hz, held | 2 |
+| GNSS velocity | GM10 Pro V3 | 5 Hz, held | 3 |
+| `prop_omega` | ESC telemetry | 100 Hz | 1 |
+| `arm_pos_L`, `arm_pos_R` | servo telemetry | 100 Hz | 2 |
+| barometric altitude | BMP581 | 100 Hz | 1 |
+| GPS age, fresh-fix flag | | | 2 |
 
-GPS values are held between fixes. Optional latency uses a sample buffer; optional
-dropout holds the last successful fix and increases its age. Noise is generated
-with explicit JAX RNG keys, independently per environment. `noise_std` is white
-noise standard deviation **per reading**, `bias_std` draws a constant initial bias
-per episode, and `bias_walk_std` is bias random walk in sensor units/√second.
-Each sensor accepts a scalar or one value per component. Unlisted values are zero.
-Convert datasheet noise densities to per-sample values using your sensor bandwidth
-before filling them in. GPS latency is rounded to the fast sensor sampling period.
-Reset bootstraps the buffer with an initial fix.
+Not observed: true body velocity (`vel_body`; no airspeed sensor), world angular
+velocity (`pod_angvel`; duplicates the gyro), brake-line lengths (no line
+sensors), and GNSS altitude (no published vertical accuracy; the barometer
+replaces it). Battery voltage and current are on the BOM but not modelled.
 
-Noise is applied before normalization and before GPS sample/hold. Quaternion
-component noise is renormalized; it is a configurable approximation, not an AHRS
-model. The XML also supplies orientation, body velocity and world angular velocity
-as ideal derived channels. They remain available as requested; deployment needs
-corresponding onboard estimates. No barometer channel is invented because none is
-currently defined in the XML.
+Sensors are sampled at 100 Hz. The policy receives one frame every 40 ms
+(`history_hz = 25`) for the last second, plus five route preview points and the
+previous action/filter velocity: 670 inputs with the defaults. History is filled
+with the first reading at reset. The network has separate actor and critic MLPs,
+each with two 128-unit tanh layers. It has no recurrent state.
+
+Noise is white per sample; bias is drawn once per episode (`bias_std`) and can
+random-walk (`bias_walk_std`, channel units/√s, default off: no datasheet gives
+it). Keys of all three dictionaries are `sensors.csv` channel names, and each
+accepts a scalar or one value per component. Unlisted values are zero, so
+`"noise_std": {}` turns noise off. The attitude estimate is the true attitude
+rotated by a small world-frame error (`attitude_roll_pitch`, `attitude_yaw`); it
+is an estimator emulation, not an AHRS. GNSS values are held between fixes.
+Optional latency uses a sample buffer; optional dropout holds the last
+successful fix and increases its age. GPS latency is rounded to the sensor
+period. Noise is applied before normalization and before GPS sample/hold.
 
 Actions are `[thrust, left_brake, right_brake]` in `[-1, 1]`. They map to
-`[0, thrust_max]` N and `[0, 3]` rad. The brake command follows the same critically
-damped filter as the viewer, reaching about 99% of a full step in one second.
-The physical servo and tendon dynamics still run underneath. Propeller spin is
-synchronized when thrust changes, using the viewer's thrust/RPM relation.
-`paramotor_control.py` contains this shared actuator logic. The 1.7 N default is
-based on the recorded climb flight; it can be lowered in configuration and cannot
-exceed the XML's 2 N actuator limit.
+`[0, thrust_max]` N and `[0, 3]` rad. `thrust_max` is 1.0 N, the hardware thrust
+clamp, and equals the XML actuator range. Under power the propeller reaction
+torque turns the vehicle; holding a line is left to the policy. The brake command
+follows the same critically damped filter as the viewer, reaching about 99% of a
+full step in one second. The physical servo and tendon dynamics still run
+underneath. Propeller spin is synchronized when thrust changes, using the
+viewer's thrust/RPM relation. `paramotor_control.py` contains this shared
+actuator logic.
 
 ## Paths, reward and curriculum
 

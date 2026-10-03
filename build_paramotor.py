@@ -219,10 +219,10 @@ OMEGA_BENCH = 10_000 * 2 * math.pi / 60.0     # rad/s at that figure
 K_T = T_BENCH / OMEGA_BENCH**2
 # Commanded thrust ceiling, i.e. the ctrlrange on the thrust actuator.
 #
-# 2.0 N = T/W 0.63 on the 325.4 g all-up mass. It is BELOW the 4.02 N (410 gf)
-# static bench figure, so this is a deliberate software limit, not a hardware
-# one: the motor/prop can pull harder than this on the bench. 
-THRUST_MAX = 2.0                              # N
+# 1.0 N = T/W 0.31 on the 325.4 g all-up mass: the hardware thrust clamp the
+# RL policy trains against. Far BELOW the 4.02 N (410 gf) static bench figure,
+# so this is a deliberate limit, not what the motor/prop can pull.
+THRUST_MAX = 1.0                              # N
 OMEGA_MAX = math.sqrt(THRUST_MAX / K_T)       # rad/s needed for THRUST_MAX
 ROTOR_KV = 0.005              # N.m.s/rad, velocity-servo gain
 ROTOR_TAU_CAP = 0.2           # N.m, spin-up torque limit
@@ -622,7 +622,7 @@ def build(tendon_ranges: dict | None = None, servo_mode: str = "position",
 
     # ---------------- ACTUATORS ----------------
     A('  <actuator>')
-    A(f'    <!-- Propeller, skydio_x2 pattern, ONE control. Ceiling {THRUST_MAX:.1f} N = T/W {THRUST_MAX/(BOM_TOTAL_G*G*9.81):.2f}, a software limit BELOW the {T_BENCH} N (410 gf) static bench figure, and above the validated flight envelope of about 1.0 N. The prop_spin DOF exists only to carry angular momentum so MuJoCo generates the gyroscopic moment natively; it has no actuator and is driven kinematically from thrust, omega = sqrt(T/K_T). Nothing is drawn spinning: the disk is axisymmetric. -->')
+    A(f'    <!-- Propeller, skydio_x2 pattern, ONE control. Ceiling {THRUST_MAX:.1f} N = T/W {THRUST_MAX/(BOM_TOTAL_G*G*9.81):.2f}, the hardware thrust clamp, well BELOW the {T_BENCH} N (410 gf) static bench figure. The prop_spin DOF exists only to carry angular momentum so MuJoCo generates the gyroscopic moment natively; it has no actuator and is driven kinematically from thrust, omega = sqrt(T/K_T). Nothing is drawn spinning: the disk is axisymmetric. -->')
     A(f'    <motor class="prop" name="thrust" site="propeller" gear="0 0 1 0 0 {-KM_KT:.4f}"/>')
     A('')
     A(f'    <!-- Two physical servos. servo_mode = "{servo_mode}" (position | torque |')

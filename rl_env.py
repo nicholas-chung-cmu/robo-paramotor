@@ -9,8 +9,37 @@ import mujoco
 import numpy as np
 
 import paths
+import sensor_spec
 from paramotor_control import smooth_brakes
 from paramotor_mjx import ParamotorMJX
+
+
+def quat_mul(a, b):
+    """Hamilton product, wxyz."""
+    w1, x1, y1, z1 = a
+    w2, x2, y2, z2 = b
+    return jp.array([
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ])
+
+
+def rotvec_quat(v):
+    """Rotation vector (rad) to unit quaternion, wxyz."""
+    angle = jp.linalg.norm(v)
+    scale = jp.where(angle > 1e-12, jp.sin(0.5 * angle) / jp.maximum(angle, 1e-12), 0.5)
+    return jp.concatenate((jp.cos(0.5 * angle)[None], scale * v))
+
+
+def quat_mat(q):
+    w, x, y, z = q
+    return jp.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+    ])
 
 
 @dataclass
@@ -18,24 +47,20 @@ class EnvConfig:
     control_hz: int = 25
     sensor_hz: int = 100
     gps_hz: int = 5
+    history_hz: int = 25  # observation history is downsampled from sensor_hz
     history_seconds: float = 1.0
     episode_seconds: float = 60.0
-    thrust_max: float = 1.7  # measured climb recording reached 1.7 N; XML limit is 2 N
+    thrust_max: float = 1.0  # hardware thrust clamp; equals the XML ctrlrange
     initial_thrust: float = 0.8
     launch_speed: float = 6.0
     altitude: float = 40.0
     preview_m: tuple = (5.0, 10.0, 20.0, 40.0, 60.0)
     path_kind: str = "random"
     curriculum: bool = True
-    noise_std: dict = field(default_factory=lambda: {
-        "gyro": 0.0013089975,                 # rad/s
-        "accel": 0.0176526,                # m/s²
-        "mag": 0.0,                  # same units as the model's magnetic field
-        "pod_pos": [2.5, 2.5, 0.5], # GPS x/y/z, meters taken/est. from datasheet
-        "pod_vel": [0.02, 0.02, 0.02], # GPS velocity, m/s est. from datasheet
-    })
-    bias_std: dict = field(default_factory=dict)
-    bias_walk_std: dict = field(default_factory=dict)  # sensor units / sqrt(second)
+    # Datasheet values from sensors.csv, keyed by its channel names.
+    noise_std: dict = field(default_factory=lambda: sensor_spec.defaults("noise_std"))
+    bias_std: dict = field(default_factory=lambda: sensor_spec.defaults("bias_std"))
+    bias_walk_std: dict = field(default_factory=dict)  # channel units / sqrt(second)
     gps_latency_s: float = 0.0
     gps_dropout: float = 0.0
     position_randomization_m: float = 1.0
@@ -71,7 +96,14 @@ class State:
 
 
 class ParamotorEnv:
-    """Actions [-1,1]: thrust, left brake, right brake. z is world-up."""
+    """Actions [-1,1]: thrust, left brake, right brake. z is world-up.
+
+    Measurements (state.sensors) are the XML sensordata, corrupted, followed by
+    one barometric altitude. The noise/bias vectors carry three more entries,
+    the attitude-estimate error, which rotates pod_quat instead of adding to it.
+    Only channels with a real counterpart on the vehicle reach the policy; see
+    sensors.csv.
+    """
 
     def __init__(self, config=None):
         self.cfg = c = config or EnvConfig()
@@ -85,6 +117,8 @@ class ParamotorEnv:
                 )
         if c.sensor_hz % c.control_hz or c.sensor_hz % c.gps_hz:
             raise ValueError("sensor_hz must be divisible by control_hz and gps_hz")
+        if c.history_hz <= 0 or c.sensor_hz % c.history_hz:
+            raise ValueError("sensor_hz must be divisible by history_hz")
         if c.path_kind not in paths.KINDS or c.history_seconds <= 0:
             raise ValueError("Invalid path kind or history length")
         if not 0 < c.thrust_max <= self.m.actuator_ctrlrange[self.physics.thrust, 1]:
@@ -95,7 +129,8 @@ class ParamotorEnv:
         self.substeps = round(self.control_dt / dt)
         self.sensor_stride = round(1 / c.sensor_hz / dt)
         self.gps_stride = round(1 / c.gps_hz / dt)
-        self.history_count = round(c.history_seconds * c.sensor_hz)
+        self.history_ratio = c.sensor_hz // c.history_hz
+        self.history_count = round(c.history_seconds * c.history_hz)
         if self.history_count < 1 or c.episode_seconds * c.control_hz < 1:
             raise ValueError(
                 "History and episodes must contain at least one sample/step"
@@ -121,56 +156,71 @@ class ParamotorEnv:
                 for i in range(self.slices[name].start, self.slices[name].stop)
             ]
         )
-        scales = {
-            "pod_quat": 1.0,
-            "gyro": 3.0,
-            "accel": 20.0,
-            "mag": 0.5,
-            "vel_body": 10.0,
-            "pod_pos": 100.0,
-            "pod_vel": 10.0,
-            "pod_angvel": 3.0,
-            "prop_omega": 1000.0,
-            "arm_pos_L": 3.0,
-            "arm_pos_R": 3.0,
-            "brake_len_L": 0.5,
-            "brake_len_R": 0.5,
+        # Measurement layout: sensordata, then baro; error vector adds attitude.
+        sd = self.m.nsensordata
+        self.baro = sd
+        self.n_meas = sd + 1
+        self.att = slice(self.n_meas, self.n_meas + 3)
+        self.n_error = self.n_meas + 3
+
+        def span(name):
+            return list(range(self.slices[name].start, self.slices[name].stop))
+
+        pos = span("pod_pos")
+        # sensors.csv channel -> entries of the error vector it corrupts.
+        self.channels = {
+            "gyro": span("gyro"),
+            "accel": span("accel"),
+            "mag": span("mag"),
+            "attitude_roll_pitch": [self.n_meas, self.n_meas + 1],
+            "attitude_yaw": [self.n_meas + 2],
+            "baro_alt": [self.baro],
+            "gps_pos_xy": pos[:2],
+            "gps_vel": span("pod_vel"),
+            "prop_omega": span("prop_omega"),
+            "arm_pos": span("arm_pos_L") + span("arm_pos_R"),
         }
-        self.scale = jp.array(
-            np.concatenate(
-                [
-                    np.full(int(n), scales[self.m.sensor(i).name])
-                    for i, n in enumerate(self.m.sensor_dim)
-                ]
-            )
-        )
         self.noise = self._sensor_vector(c.noise_std)
         self.bias_scale = self._sensor_vector(c.bias_std)
         self.walk = self._sensor_vector(c.bias_walk_std)
-        self.frame_size = self.m.nsensordata + 2  # GPS age and fresh-fix indicator
+        self.frame_size = int(self._frame(
+            jp.zeros(self.n_meas).at[self.slices["pod_quat"].start].set(1.0),
+            jp.zeros(3), jp.zeros(()), jp.array(True)).size)
         self.obs_size = self.history_count * self.frame_size + len(c.preview_m) * 3 + 5
 
     def _sensor_vector(self, mapping):
-        unknown = set(mapping) - set(self.slices)
+        unknown = set(mapping) - set(self.channels)
         if unknown:
-            raise ValueError(f"Unknown sensor names: {unknown}")
-        out = np.zeros(self.m.nsensordata)
+            raise ValueError(f"Unknown sensor channels: {unknown}")
+        out = np.zeros(self.n_error)
         for name, value in mapping.items():
-            out[self.slices[name]] = value
+            out[self.channels[name]] = value
         if np.any(out < 0) or not np.all(np.isfinite(out)):
             raise ValueError("Noise standard deviations must be finite and nonnegative")
         return jp.array(out)
 
-    def _normalise(self, values, origin, age, fresh):
-        values = values.at[self.slices["pod_pos"]].add(-origin)
-        values = values / self.scale
-        return jp.concatenate(
-            (values, jp.array([jp.minimum(age, 10.0) / 2.0, fresh.astype(jp.float32)]))
-        )
+    def _frame(self, values, origin, age, fresh):
+        """One observation frame: only channels the real vehicle measures."""
+        rotation = quat_mat(values[self.slices["pod_quat"]])
+        s = self.slices
+        return jp.concatenate((
+            rotation[:, 0], rotation[:, 1],               # 6-D estimated attitude
+            values[s["gyro"]] / 3.0,
+            values[s["accel"]] / 20.0,
+            values[s["mag"]] / 0.5,
+            (values[s["pod_pos"]][:2] - origin[:2]) / 100.0,  # GPS horizontal
+            values[s["pod_vel"]] / 10.0,
+            values[s["prop_omega"]] / 1000.0,
+            values[s["arm_pos_L"]] / 3.0,
+            values[s["arm_pos_R"]] / 3.0,
+            (values[self.baro, None] - origin[2]) / 20.0,  # barometric altitude
+            jp.array([jp.minimum(age, 10.0) / 2.0, fresh.astype(jp.float32)]),
+        ))
 
     def _observation(self, state):
         # Guidance uses measured position/orientation, never true aircraft pose.
-        pos = state.sensors[self.slices["pod_pos"]]
+        # GNSS gives x/y; the barometer gives altitude.
+        pos = state.sensors[self.slices["pod_pos"]].at[2].set(state.sensors[self.baro])
         quat = state.sensors[self.slices["pod_quat"]]
         w, x, y, z = quat
         yaw = jp.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
@@ -202,12 +252,12 @@ class ParamotorEnv:
         for a in self.physics.free_qpos:
             qpos = qpos.at[a : a + 3].add(offset)
         data = self.physics.forward(data.replace(qpos=qpos))
-        bias = jax.random.normal(bk, (self.m.nsensordata,)) * self.bias_scale
+        bias = jax.random.normal(bk, (self.n_error,)) * self.bias_scale
         key, nk = jax.random.split(key)
         sensors = self._corrupt(data.sensordata, bias, nk)
         zero = jp.zeros((), data.qpos.dtype)
         integer_zero = jp.zeros((), jp.int32)
-        frame = self._normalise(sensors, origin, zero, jp.array(True))
+        frame = self._frame(sensors, origin, zero, jp.array(True))
         history = jp.repeat(frame[None, :], self.history_count, axis=0)
         gps = jp.repeat(
             sensors[self.gps_indices][None, :], self.latency_ticks + 1, axis=0
@@ -241,8 +291,12 @@ class ParamotorEnv:
         return self._observation(state)
 
     def _corrupt(self, truth, bias, key):
-        values = truth + bias + self.noise * jax.random.normal(key, truth.shape)
-        q = values[self.slices["pod_quat"]]
+        """sensordata -> measurements: additive noise/bias, baro, estimated attitude."""
+        error = bias + self.noise * jax.random.normal(key, (self.n_error,))
+        baro = truth[self.slices["pod_pos"]][2:3]
+        values = jp.concatenate((truth, baro)) + error[: self.n_meas]
+        # Estimator error is a small world-frame rotation of the true attitude.
+        q = quat_mul(rotvec_quat(error[self.att]), truth[self.slices["pod_quat"]])
         q = q / jp.maximum(jp.linalg.norm(q), 1e-8)
         q = jp.where(q[0] < 0, -q, q)  # avoid quaternion sign jumps in history
         return values.at[self.slices["pod_quat"]].set(q)
@@ -267,8 +321,14 @@ class ParamotorEnv:
             self.latency_ticks / self.cfg.sensor_hz,
             state.gps_age + 1 / self.cfg.sensor_hz,
         )
-        frame = self._normalise(values, state.origin, age, fix)
-        history = jp.concatenate((state.history[1:], frame[None, :]), axis=0)
+        frame = self._frame(values, state.origin, age, fix)
+        # History keeps every history_ratio-th sample (history_hz).
+        push = (tick // self.sensor_stride) % self.history_ratio == 0
+        history = jp.where(
+            push,
+            jp.concatenate((state.history[1:], frame[None, :]), axis=0),
+            state.history,
+        )
         return state.replace(
             key=key,
             sensors=values,

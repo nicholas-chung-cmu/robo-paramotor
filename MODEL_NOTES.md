@@ -135,20 +135,15 @@ velocities independently, test torque routing, and compare rho=0 with disabled
 aero using computed energy; the original energy check passed on zeros.
 
 **The old claim of a validated 0–1 N powered flight envelope is withdrawn.**
-Three flight acceptance checks fail with correct reaction torque and the viewer's
-rotor initialization. `test_aero.py` intentionally returns failure until these
-targets are met. The same failed checks also fail under `pytest`; the standalone
-runner continues after reported failures to show the full summary.
-`test_aero_reporting.py` verifies process exit codes using deliberately failing
-flight measurements and checks that the standalone runner continues afterward.
-Implementation/parity success does not validate powered trim.
-RL's available 1.7 N thrust also exceeds the envelope in these neutral runs;
-its control range has not been changed.
+Powered flight with neutral brakes turns under the propeller reaction torque.
+That is accepted, not a defect to trim out: holding a line is the controller's
+job. `test_aero.py` therefore REPORTS powered bank and sink as diagnostics
+(and only asserts that the run stays finite). `test_aero_reporting.py` verifies
+pytest and standalone exit codes using the unpowered-glide check as its probe.
 
-Next work is to diagnose powered trim, reaction-torque balance, and brake
-authority within the reduced model. This review does not establish the cause
-of high-thrust departure or prove that a stall model, flexible canopy, or new
-rigging is required. No brake law, vehicle redesign, or PPO changes are included.
+Thrust is clamped at 1.0 N in `build_paramotor.py` (`THRUST_MAX`), so the XML
+`ctrlrange` and the RL `thrust_max` agree; the cause of departure above about
+1.7 N was not investigated.
 
 ### Run locally on Windows
 

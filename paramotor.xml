@@ -18,7 +18,7 @@
     </default>
     <!-- One class per actuator type: motor/velocity/position share one default slot and would overwrite each other. -->
     <default class="prop">
-      <motor ctrlrange="0 2.0"/>
+      <motor ctrlrange="0 1.0"/>
     </default>
     <default class="servo_pos">
       <position kp="2.0" kv="0.02"
@@ -199,7 +199,7 @@
   </tendon>
 
   <actuator>
-    <!-- Propeller, skydio_x2 pattern, ONE control. Ceiling 2.0 N = T/W 0.63, a software limit BELOW the 4.02 N (410 gf) static bench figure, and above the validated flight envelope of about 1.0 N. The prop_spin DOF exists only to carry angular momentum so MuJoCo generates the gyroscopic moment natively; it has no actuator and is driven kinematically from thrust, omega = sqrt(T/K_T). Nothing is drawn spinning: the disk is axisymmetric. -->
+    <!-- Propeller, skydio_x2 pattern, ONE control. Ceiling 1.0 N = T/W 0.31, the hardware thrust clamp, well BELOW the 4.02 N (410 gf) static bench figure. The prop_spin DOF exists only to carry angular momentum so MuJoCo generates the gyroscopic moment natively; it has no actuator and is driven kinematically from thrust, omega = sqrt(T/K_T). Nothing is drawn spinning: the disk is axisymmetric. -->
     <motor class="prop" name="thrust" site="propeller" gear="0 0 1 0 0 -0.0105"/>
 
     <!-- Two physical servos. servo_mode = "position" (position | torque | both). With "both", drive ONE channel and leave the other ctrl at 0: MuJoCo sums actuators on the same joint. forcerange is a SOFTWARE cap of 0.3 N.m on the arm hinge. The real BD10BL-CAN stalls at 0.275 N.m (7.4 V), so the hardware is the binding limit, not this number. -->
