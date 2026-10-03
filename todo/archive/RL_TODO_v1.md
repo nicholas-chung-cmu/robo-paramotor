@@ -1,7 +1,7 @@
 # TODO — what the paramotor MJCF needs before a PPO policy can control it
 
 > Implementation update: the JAX/MJX feedforward PPO environment, training and
-> evaluation entry points now live in this repo. See [RL.md](RL.md) for the active
+> evaluation entry points now live in this repo. See [RL.md](../../docs/RL.md) for the active
 > design, configuration and commands. The checklist below is historical planning;
 > its CPU/Gym wrapper, observation and brake-model proposals are superseded where
 > they differ from that implementation.

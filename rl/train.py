@@ -5,7 +5,7 @@ from pathlib import Path
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 os.environ.setdefault(
-    "JAX_COMPILATION_CACHE_DIR", str(Path(__file__).with_name("runs") / ".jax_cache")
+    "JAX_COMPILATION_CACHE_DIR", str(Path(__file__).resolve().parents[1] / "runs" / ".jax_cache")
 )
 import argparse
 import csv
@@ -21,7 +21,7 @@ import jax.numpy as jp
 import numpy as np
 import optax
 
-from rl_env import EnvConfig, ParamotorEnv
+from rl.rl_env import EnvConfig, ParamotorEnv
 
 
 @dataclass

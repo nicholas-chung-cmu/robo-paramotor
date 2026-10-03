@@ -12,7 +12,7 @@ Use a separate environment so the viewer's existing dependencies stay intact:
 ```bash
 python3 -m venv .venv-rl
 source .venv-rl/bin/activate
-python -m pip install -r requirements-rl.txt
+python -m pip install -r rl/requirements-rl.txt
 python -m pip install 'jax[cuda13]==0.11.2'
 python -c 'import jax; print(jax.devices())'
 ```
@@ -28,7 +28,7 @@ selects the CPU. GPU execution should print `CudaDevice`, not `CpuDevice`.
 MJX may print that optional `warp` imports are unavailable. This implementation
 explicitly uses the JAX backend, so Warp is not a required dependency.
 
-MuJoCo and MJX are pinned together. `paramotor_mjx.py` uses a few private MJX
+MuJoCo and MJX are pinned together. `mjx/paramotor_mjx.py` uses a few private MJX
 forward-stage functions to inject aerodynamic forces at the correct point in the
 solver. Run the parity tests before upgrading either package.
 
@@ -44,49 +44,52 @@ the JAX CUDA wheels inside the image bring their own CUDA runtime.
 docker run --rm --gpus all ubuntu nvidia-smi
 
 # Build once per machine (CUDA 13 default; JAX_CUDA=cuda12 for older drivers).
-docker compose build
-docker compose run --rm rl                  # prints [CudaDevice(id=0)]
+# All commands run from the repo root.
+docker compose -f docker/compose.yaml build
+docker compose -f docker/compose.yaml run --rm rl   # prints [CudaDevice(id=0)]
 
 # Every command from "Run" below works the same way, prefixed:
-docker compose run --rm rl python -m pytest test_rl.py -q
-docker compose run --rm rl python train.py --smoke --output runs/smoke
-docker compose run --rm rl python train.py --num-envs 256 --updates 1000 --output runs/first
+docker compose -f docker/compose.yaml run --rm rl python -m pytest tests/test_rl.py -q
+docker compose -f docker/compose.yaml run --rm rl python -m rl.train --smoke --output runs/smoke
+docker compose -f docker/compose.yaml run --rm rl python -m rl.train --num-envs 256 --updates 1000 --output runs/first
 ```
 
 The repo is mounted at `/workspace`, so code edits take effect without a rebuild
 and `runs/` is written to the host. Rebuild only after changing
-`requirements-rl.txt`. Without a GPU, build the CPU image and run it without
+`rl/requirements-rl.txt`. Without a GPU, build the CPU image and run it without
 compose's GPU reservation:
 
 ```bash
-docker build -t paramotor-rl:cpu --build-arg JAX_CUDA=cpu .
-docker run --rm -v "$PWD:/workspace" paramotor-rl:cpu python test_aero.py
+docker build -f docker/Dockerfile -t paramotor-rl:cpu --build-arg JAX_CUDA=cpu .
+docker run --rm -v "$PWD:/workspace" paramotor-rl:cpu python -m tests.test_aero
 ```
 
-The container is headless, so `evaluate.py --view` and `view.sh` must run on the
+The container is headless, so `rl.evaluate --view` and `viewer/view.sh` must run on the
 host; copy the checkpoint out of `runs/` and view it there.
 
 ## Run
 
+Run everything from the repo root; modules are invoked with `python -m`.
+
 ```bash
 # Check physics, sensor timing, route geometry, and PPO math.
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest test_rl.py -q
-python test_aero.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/test_rl.py -q
+python -m tests.test_aero
 
 # Compile and exercise rollout, optimization, and checkpoint writing.
-python train.py --smoke --output runs/smoke
+python -m rl.train --smoke --output runs/smoke
 
 # Initial training run. Start small on a laptop; increase after measuring memory.
-python train.py --num-envs 64 --updates 1000 --output runs/first
+python -m rl.train --num-envs 64 --updates 1000 --output runs/first
 
 # Continue for another 1000 updates, keeping weights, optimizer and curriculum.
-python train.py --resume runs/first/checkpoint.pkl --updates 1000 --output runs/first
+python -m rl.train --resume runs/first/checkpoint.pkl --updates 1000 --output runs/first
 
 # Repeatable evaluation: seven routes, three seeds each.
-python evaluate.py runs/first/checkpoint.pkl --output runs/eval-first
+python -m rl.evaluate runs/first/checkpoint.pkl --output runs/eval-first
 
 # Watch one recorded evaluation flight, with its reference path overlaid.
-python evaluate.py runs/first/checkpoint.pkl --path left --episodes 1 --view
+python -m rl.evaluate runs/first/checkpoint.pkl --path left --episodes 1 --view
 ```
 
 The test command disables unrelated globally installed pytest plugins (for example,
@@ -116,7 +119,7 @@ pickle: load your own trusted checkpoint files.
 
 ## Configuration
 
-Defaults live in `EnvConfig` in `rl_env.py` and `PPOConfig` in `train.py`. Override
+Defaults live in `EnvConfig` in `rl/rl_env.py` and `PPOConfig` in `rl/train.py`. Override
 only what you need through JSON, without editing code:
 
 ```json
@@ -146,11 +149,11 @@ configuration stored in the checkpoint; CLI overrides still apply.
 
 ## Observations and actions
 
-The policy sees only what the vehicle can measure. `sensors.csv` lists every
+The policy sees only what the vehicle can measure. `model/sensors.csv` lists every
 sensor: part, units, rate, white-noise σ, per-episode bias σ, the datasheet figure
 each value comes from, and the channels deliberately left out. It is the single
 source of truth: `EnvConfig.noise_std` and `bias_std` default to its values, and
-`test_rl.py` checks that the CSV and the environment agree.
+`tests/test_rl.py` checks that the CSV and the environment agree.
 
 | Frame entry | Source | Rate | Size |
 | --- | --- | --- | --- |
@@ -194,7 +197,7 @@ torque turns the vehicle; holding a line is left to the policy. The brake comman
 follows the same critically damped filter as the viewer, reaching about 99% of a
 full step in one second. The physical servo and tendon dynamics still run
 underneath. Propeller spin is synchronized when thrust changes, using the
-viewer's thrust/RPM relation. `paramotor_control.py` contains this shared
+viewer's thrust/RPM relation. `model/paramotor_control.py` contains this shared
 actuator logic.
 
 ## Paths, reward and curriculum
@@ -240,13 +243,13 @@ comparison for saved policies.
 
 ## Code map
 
-- `paramotor_mjx.py`: JAX aerodynamics and MuJoCo forward/integration pipeline.
-- `paramotor_control.py`: shared thrust/spin and brake smoothing.
-- `paths.py`: route generation, local projection and lookahead sampling.
-- `rl_env.py`: reset/step, sensors, history, rewards and termination.
-- `train.py`: feedforward PPO, curriculum, logging and checkpoints.
-- `evaluate.py`: fixed-route evaluation, CSV export and optional replay.
-- `test_rl.py`: dynamics parity and learning-environment regression tests.
+- `mjx/paramotor_mjx.py`: JAX aerodynamics and MuJoCo forward/integration pipeline.
+- `model/paramotor_control.py`: shared thrust/spin and brake smoothing.
+- `rl/routes.py`: route generation, local projection and lookahead sampling.
+- `rl/rl_env.py`: reset/step, sensors, history, rewards and termination.
+- `rl/train.py`: feedforward PPO, curriculum, logging and checkpoints.
+- `rl/evaluate.py`: fixed-route evaluation, CSV export and optional replay.
+- `tests/test_rl.py`: dynamics parity and learning-environment regression tests.
 
 There is no Gym/Brax wrapper or separate learner framework: `vmap` batches the
 functional environment, `lax.scan` runs physics/rollouts, and Optax updates the PPO

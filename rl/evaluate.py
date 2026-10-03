@@ -5,7 +5,7 @@ from pathlib import Path
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 os.environ.setdefault(
-    "JAX_COMPILATION_CACHE_DIR", str(Path(__file__).with_name("runs") / ".jax_cache")
+    "JAX_COMPILATION_CACHE_DIR", str(Path(__file__).resolve().parents[1] / "runs" / ".jax_cache")
 )
 import argparse
 import csv
@@ -15,9 +15,9 @@ import jax
 import jax.numpy as jp
 import numpy as np
 
-import paths
-from rl_env import EnvConfig, ParamotorEnv
-from train import ActorCritic, load_checkpoint
+from rl import routes
+from rl.rl_env import EnvConfig, ParamotorEnv
+from rl.train import ActorCritic, load_checkpoint
 
 COLUMNS = [
     "time_s",
@@ -133,7 +133,7 @@ def replay(env, route, qpos, qvel, ctrl):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("checkpoint", type=Path)
-    ap.add_argument("--path", choices=("all",) + paths.KINDS, default="all")
+    ap.add_argument("--path", choices=("all",) + routes.KINDS, default="all")
     ap.add_argument(
         "--episodes", type=int, default=3, help="number of fixed seeds per route"
     )
@@ -153,14 +153,14 @@ def main():
     cfg.episode_seconds = args.seconds
     env = ParamotorEnv(cfg)
     network = ActorCritic(saved["ppo"]["hidden_size"])
-    kinds = paths.KINDS[1:] if args.path == "all" else (args.path,)
+    kinds = routes.KINDS[1:] if args.path == "all" else (args.path,)
     names = [kind for kind in kinds for _ in range(args.episodes)]
     seeds = [args.seed + i for _ in kinds for i in range(args.episodes)]
     keys = jp.stack([jax.random.PRNGKey(seed) for seed in seeds])
     states = jax.jit(jax.vmap(env.reset, in_axes=(0, None)))(keys, 1.0)
-    routes = [paths.make_path(key, 1.0, name) for key, name in zip(keys, names)]
-    points = jp.stack([p for p, _ in routes]) + states.origin[:, None, :]
-    states = states.replace(points=points, arc=jp.stack([a for _, a in routes]))
+    tracks = [routes.make_path(key, 1.0, name) for key, name in zip(keys, names)]
+    points = jp.stack([p for p, _ in tracks]) + states.origin[:, None, :]
+    states = states.replace(points=points, arc=jp.stack([a for _, a in tracks]))
     states = jax.vmap(env._observation)(states)
     print(
         f"Evaluating {len(names)} flights on {jax.devices()}; first call compiles...",

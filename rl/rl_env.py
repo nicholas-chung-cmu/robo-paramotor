@@ -8,10 +8,10 @@ from flax import struct
 import mujoco
 import numpy as np
 
-import paths
-import sensor_spec
-from paramotor_control import smooth_brakes
-from paramotor_mjx import ParamotorMJX
+from rl import routes
+from model import sensor_spec
+from model.paramotor_control import smooth_brakes
+from mjx.paramotor_mjx import ParamotorMJX
 
 
 def quat_mul(a, b):
@@ -119,7 +119,7 @@ class ParamotorEnv:
             raise ValueError("sensor_hz must be divisible by control_hz and gps_hz")
         if c.history_hz <= 0 or c.sensor_hz % c.history_hz:
             raise ValueError("sensor_hz must be divisible by history_hz")
-        if c.path_kind not in paths.KINDS or c.history_seconds <= 0:
+        if c.path_kind not in routes.KINDS or c.history_seconds <= 0:
             raise ValueError("Invalid path kind or history length")
         if not 0 < c.thrust_max <= self.m.actuator_ctrlrange[self.physics.thrust, 1]:
             raise ValueError("thrust_max must fit the XML actuator range")
@@ -224,9 +224,9 @@ class ParamotorEnv:
         quat = state.sensors[self.slices["pod_quat"]]
         w, x, y, z = quat
         yaw = jp.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-        i, s, _, _ = paths.project(state.points, state.arc, pos, state.observed_index)
+        i, s, _, _ = routes.project(state.points, state.arc, pos, state.observed_index)
         goals = (
-            paths.preview(state.points, state.arc, s, jp.array(self.cfg.preview_m))
+            routes.preview(state.points, state.arc, s, jp.array(self.cfg.preview_m))
             - pos
         )
         co, si = jp.cos(yaw), jp.sin(yaw)
@@ -239,7 +239,7 @@ class ParamotorEnv:
 
     def reset(self, key, difficulty=0.0):
         key, pk, nk, bk = jax.random.split(key, 4)
-        points, arc = paths.make_path(pk, difficulty, self.cfg.path_kind)
+        points, arc = routes.make_path(pk, difficulty, self.cfg.path_kind)
         data = self.physics.initial(
             self.cfg.launch_speed, self.cfg.altitude, self.cfg.initial_thrust
         )
@@ -369,7 +369,7 @@ class ParamotorEnv:
         state, _ = jax.lax.scan(substep, state, jp.arange(self.substeps))
         data = state.data  # the last substep always refreshed the sensors
         pos = data.site_xpos[self.m.site("pod_com").id]
-        index, progress, closest, tangent = paths.project(
+        index, progress, closest, tangent = routes.project(
             state.points, state.arc, pos, state.path_index
         )
         error = pos - closest

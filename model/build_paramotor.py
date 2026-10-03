@@ -12,8 +12,8 @@ Consolidations applied (per request):
   * PCB area is a GUESS (see PCB_L x PCB_W below) -- nothing in the spec fixes it.
 
 Usage:
-    python build_paramotor.py              # write paramotor.xml
-    python build_paramotor.py --calibrate  # compile, measure tendon lengths, rewrite
+    python -m model.build_paramotor        # write paramotor.xml
+    python -m model.build_paramotor --calibrate  # compile, measure tendon lengths, rewrite
 """
 import argparse
 import math

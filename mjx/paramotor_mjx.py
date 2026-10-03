@@ -12,10 +12,10 @@ from mujoco import mjx
 from mujoco.mjx._src import forward, sensor, solver
 import numpy as np
 
-from paramotor_params import PEEK_1M
-from paramotor_control import K_T
+from model.paramotor_params import PEEK_1M
+from model.paramotor_control import K_T
 
-XML = Path(__file__).with_name("paramotor.xml")
+XML = Path(__file__).resolve().parents[1] / "model" / "paramotor.xml"
 FLIP = jp.array([1.0, -1.0, -1.0])
 
 

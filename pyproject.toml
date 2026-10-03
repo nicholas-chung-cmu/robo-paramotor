@@ -1,0 +1,4 @@
+# Run everything from the repo root: python -m <package>.<module>, and plain `pytest`.
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

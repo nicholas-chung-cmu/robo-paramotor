@@ -10,13 +10,13 @@ from mujoco import mjx
 import numpy as np
 import pytest
 
-import paths
-import sensor_spec
-from paramotor_aero import ParamotorAero
-from paramotor_control import smooth_brakes
-from paramotor_params import PEEK_1M
-from rl_env import EnvConfig, ParamotorEnv
-from train import advantages, log_probability
+from rl import routes
+from model import sensor_spec
+from model.paramotor_aero import ParamotorAero
+from model.paramotor_control import smooth_brakes
+from model.paramotor_params import PEEK_1M
+from rl.rl_env import EnvConfig, ParamotorEnv
+from rl.train import advantages, log_probability
 
 
 @pytest.fixture(scope="module")
@@ -106,7 +106,7 @@ def test_brake_step_reaches_99_percent_at_one_second():
 
 
 def test_random_path_limits_and_projection():
-    p, arc = paths.make_path(jax.random.PRNGKey(2))
+    p, arc = routes.make_path(jax.random.PRNGKey(2))
     delta = np.diff(p, axis=0)
     horizontal = np.linalg.norm(delta[:, :2], axis=1)
     grade = delta[:, 2] / horizontal
@@ -114,8 +114,8 @@ def test_random_path_limits_and_projection():
     assert abs(grade).max() <= 0.10001
     assert abs(np.diff(heading) / 2).max() <= 0.04001
     np.testing.assert_allclose(horizontal, 2.0, atol=1e-4)
-    straight, s = paths.make_path(jax.random.PRNGKey(0), kind="straight")
-    i, progress, closest, tangent = paths.project(
+    straight, s = routes.make_path(jax.random.PRNGKey(0), kind="straight")
+    i, progress, closest, tangent = routes.project(
         straight, s, jp.array([11.0, 3.0, -2.0]), 4
     )
     assert int(i) == 5
@@ -123,15 +123,15 @@ def test_random_path_limits_and_projection():
     np.testing.assert_allclose(closest, [11.0, 0.0, 0.0])
     np.testing.assert_allclose(tangent, [1.0, 0.0, 0.0])
     np.testing.assert_allclose(
-        paths.preview(straight, s, progress, jp.array([5.0, 10.0]))[:, 0], [16.0, 21.0]
+        routes.preview(straight, s, progress, jp.array([5.0, 10.0]))[:, 0], [16.0, 21.0]
     )
 
 
 def test_figure_eight_projection_stays_on_current_branch():
-    p, arc = paths.make_path(jax.random.PRNGKey(0), kind="figure_eight")
-    index, progress, _, _ = paths.project(p, arc, jp.zeros(3), 0)
+    p, arc = routes.make_path(jax.random.PRNGKey(0), kind="figure_eight")
+    index, progress, _, _ = routes.project(p, arc, jp.zeros(3), 0)
     assert int(index) == 0 and float(progress) == 0
-    index, progress, _, _ = paths.project(p, arc, jp.zeros(3), 90)
+    index, progress, _, _ = routes.project(p, arc, jp.zeros(3), 90)
     assert 87 <= int(index) <= 102 and float(progress) > 100
 
 

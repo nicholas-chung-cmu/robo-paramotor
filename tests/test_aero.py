@@ -6,14 +6,15 @@ Actuator lags are not implemented.
 """
 import math
 from functools import lru_cache
+from pathlib import Path
 import numpy as np
 import mujoco
 
-import paramotor_aero as A
-import paramotor_params as PP
-from paramotor_control import sync_prop
+from model import paramotor_aero as A
+from model import paramotor_params as PP
+from model.paramotor_control import sync_prop
 
-XML = "paramotor.xml"
+XML = str(Path(__file__).resolve().parents[1] / "model" / "paramotor.xml")
 GREEN, RED, DIM, OFF = "\033[32m", "\033[31m", "\033[2m", "\033[0m"
 _results = []
 

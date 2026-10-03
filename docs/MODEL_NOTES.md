@@ -15,12 +15,12 @@ view_paramotor.py     interactive viewer, tendons forced visible
 
 ```bash
 # look at it (macOS needs mjpython: the viewer must own the main thread)
-./view.sh                      # live, strip aero, default 0.8 N, tracks the pod
-./view.sh --thrust 0           # unpowered glide baseline
-./view.sh --aero lumped        # the paper's single-force model, for comparison
-./view.sh --aero off           # no aero: confirms it falls ballistically
-./view.sh --sweep              # brakes cycling
-./view.sh --build              # regenerate the XML first
+viewer/view.sh                      # live, strip aero, default 0.8 N, tracks the pod
+viewer/view.sh --thrust 0           # unpowered glide baseline
+viewer/view.sh --aero lumped        # the paper's single-force model, for comparison
+viewer/view.sh --aero off           # no aero: confirms it falls ballistically
+viewer/view.sh --sweep              # brakes cycling
+viewer/view.sh --build              # regenerate the XML first
 ```
 
 Anything driving the model itself needs the same three lines the viewer uses:
@@ -150,11 +150,11 @@ Thrust is clamped at 1.0 N in `build_paramotor.py` (`THRUST_MAX`), so the XML
 From PowerShell in the repository, the installed environment can run:
 
 ```powershell
-.\.venv-rl\Scripts\python.exe test_aero.py
-.\.venv-rl\Scripts\python.exe -m pytest test_aero.py test_aero_reporting.py -q
-.\.venv-rl\Scripts\python.exe -m pytest test_rl.py -q
-.\.venv-rl\Scripts\python.exe view_paramotor.py --thrust 0
-.\.venv-rl\Scripts\python.exe view_paramotor.py --thrust 0.8
+.\.venv-rl\Scripts\python.exe -m tests.test_aero
+.\.venv-rl\Scripts\python.exe -m pytest tests/test_aero.py tests/test_aero_reporting.py -q
+.\.venv-rl\Scripts\python.exe -m pytest tests/test_rl.py -q
+.\.venv-rl\Scripts\python.exe -m viewer.view_paramotor --thrust 0
+.\.venv-rl\Scripts\python.exe -m viewer.view_paramotor --thrust 0.8
 ```
 
 The viewer opens a window: Up/Down changes thrust, Left/Right pulls brakes, and
@@ -166,10 +166,10 @@ For a fresh viewer-only installation with an installed Python 3.12:
 ```powershell
 python -m venv .venv-viewer
 .\.venv-viewer\Scripts\python.exe -m pip install mujoco==3.13.0 numpy==2.5.3
-.\.venv-viewer\Scripts\python.exe view_paramotor.py --thrust 0
+.\.venv-viewer\Scripts\python.exe -m viewer.view_paramotor --thrust 0
 ```
 
-See `RL.md` for the larger training environment. On this Windows host, installing
+See `docs/RL.md` for the larger training environment. On this Windows host, installing
 all requirements hit a long-path error in an Orbax test fixture; installing the
 remaining MJX/Flax/Optax wheels supplied the imports needed for the ten checks.
 Full training dependencies and GPU execution were not verified in this review.
@@ -244,8 +244,8 @@ W_BRAKE = 0.0035   # brake lines, drawn red
 The canopy is drawn at 0.55 alpha so lines behind it stay readable.
 
 ```
-../.venv/bin/python view_paramotor.py           # hanging at 6 m/s trim
-../.venv/bin/python view_paramotor.py --sweep   # brakes cycle 0 -> 0.5 rev
+../.venv/bin/python -m viewer.view_paramotor           # hanging at 6 m/s trim
+../.venv/bin/python -m viewer.view_paramotor --sweep   # brakes cycle 0 -> 0.5 rev
 ```
 
 The viewer forces `mjVIS_TENDON` and `mjVIS_ACTUATOR` on. `--sweep` is the

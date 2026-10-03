@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_python(arguments, cwd):
@@ -27,7 +27,7 @@ def test_pytest_reports_flight_acceptance_result(tmp_path, flight, status, summa
     # then verify pytest's process status, not just the helper's printed output.
     probe = tmp_path / "test_flight_reporting.py"
     probe.write_text(
-        "import test_aero as aero\n"
+        "from tests import test_aero as aero\n"
         "def test_flight_acceptance():\n"
         f"    aero._free_flight = lambda *args, **kwargs: {flight!r}\n"
         "    aero.test_unpowered_glide()\n", encoding="utf-8")
@@ -39,7 +39,7 @@ def test_pytest_reports_flight_acceptance_result(tmp_path, flight, status, summa
 def test_standalone_reports_failure_and_continues(tmp_path):
     probe = tmp_path / "run_aero_reporting.py"
     probe.write_text(
-        "import test_aero as aero\n"
+        "from tests import test_aero as aero\n"
         "flight_test = aero.test_unpowered_glide\n"
         "for name in vars(aero).copy():\n"
         "    if name.startswith('test_'):\n"

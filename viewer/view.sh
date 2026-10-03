@@ -1,21 +1,21 @@
 #!/bin/bash
 # Open the model in the MuJoCo viewer. Does NOT rebuild unless asked.
 #
-#   ./view.sh              LIVE: free flight, powered, camera tracks the pod
-#   ./view.sh --sweep      live, with the brakes cycling
-#   ./view.sh --zoom 12    camera pulled back further
-#   ./view.sh --slow       live at 1/20 speed (also --speed 0.02)
-#   ./view.sh --freeze     hold the design pose, nothing moves
-#   ./view.sh --trim       settle to hanging trim, then hold it
-#   ./view.sh --raw        stock MuJoCo viewer -- WARNING: NO AERODYNAMICS.
+#   viewer/view.sh              LIVE: free flight, powered, camera tracks the pod
+#   viewer/view.sh --sweep      live, with the brakes cycling
+#   viewer/view.sh --zoom 12    camera pulled back further
+#   viewer/view.sh --slow       live at 1/20 speed (also --speed 0.02)
+#   viewer/view.sh --freeze     hold the design pose, nothing moves
+#   viewer/view.sh --trim       settle to hanging trim, then hold it
+#   viewer/view.sh --raw        stock MuJoCo viewer -- WARNING: NO AERODYNAMICS.
 #                          It loads the XML only, and aero lives in Python, so
 #                          the vehicle just falls. Use it for geometry, not flight.
-#   ./view.sh --bare       aircraft only, no ground or mountains
-#   ./view.sh --aero lumped  the paper's single-force model instead of strip
-#   ./view.sh --aero off     no aerodynamics at all (it just falls)
-#   ./view.sh --thrust 0.8   thrust in N; the XML caps it at 1.0 N (hardware clamp)
-#   ./view.sh --inertia    show the equivalent inertia boxes (mass, NOT drag)
-#   ./view.sh --build      regenerate paramotor.xml + scene.xml first
+#   viewer/view.sh --bare       aircraft only, no ground or mountains
+#   viewer/view.sh --aero lumped  the paper's single-force model instead of strip
+#   viewer/view.sh --aero off     no aerodynamics at all (it just falls)
+#   viewer/view.sh --thrust 0.8   thrust in N; the XML caps it at 1.0 N (hardware clamp)
+#   viewer/view.sh --inertia    show the equivalent inertia boxes (mass, NOT drag)
+#   viewer/view.sh --build      regenerate paramotor.xml + scene.xml first
 #
 # This does NOT rebuild by default: it views the XML exactly as it sits on
 # disk, so hand edits survive and you can debug the file you are looking at.
@@ -35,10 +35,11 @@
 #   Windows (Git Bash / MSYS2) and Linux use the plain interpreter, and the
 #   venv puts it in Scripts/ rather than bin/ on Windows.
 #   Override either with env vars if your layout differs:
-#       VENV=/path/to/venv ./view.sh
-#       PY=/path/to/python MJ=/path/to/mjpython ./view.sh
+#       VENV=/path/to/venv viewer/view.sh
+#       PY=/path/to/python MJ=/path/to/mjpython viewer/view.sh
 set -euo pipefail
-cd "$(dirname "$0")"
+# Run from the repo root so `python -m viewer...` / `model...` resolve.
+cd "$(dirname "$0")/.."
 
 VENV="${VENV:-../.venv}"
 
@@ -93,13 +94,13 @@ done
 
 if [[ $BUILD -eq 1 ]]; then
   echo "--build: regenerating paramotor.xml + scene.xml"
-  "$PY" build_paramotor.py
+  "$PY" -m model.build_paramotor
 fi
 
 if [[ "${ARGS[0]:-}" == "--raw" ]]; then
-  exec "$MJ" -m mujoco.viewer --mjcf=scene.xml
+  exec "$MJ" -m mujoco.viewer --mjcf=model/scene.xml
 else
   # ${ARGS[@]+...} so an empty array does not trip set -u on bash 3.2 (macOS)
   # and does not pass a bogus empty argument through to argparse.
-  exec "$MJ" view_paramotor.py ${ARGS[@]+"${ARGS[@]}"}
+  exec "$MJ" -m viewer.view_paramotor ${ARGS[@]+"${ARGS[@]}"}
 fi

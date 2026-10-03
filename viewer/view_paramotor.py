@@ -3,13 +3,13 @@
 
 macOS needs mjpython, not python: the viewer must own the main thread.
 
-    ../.venv/bin/mjpython view_paramotor.py              # LIVE, free flight, powered
-    ../.venv/bin/mjpython view_paramotor.py --csv flight.csv # log odometry
-    ../.venv/bin/mjpython view_paramotor.py --sweep      # live + brakes cycling
-    ../.venv/bin/mjpython view_paramotor.py --zoom 12    # camera pulled back
-    ../.venv/bin/mjpython view_paramotor.py --slow       # 1/20 speed
-    ../.venv/bin/mjpython view_paramotor.py --freeze     # hold the design pose
-    ../.venv/bin/mjpython view_paramotor.py --trim       # settle, then hold it
+    ../.venv/bin/mjpython -m viewer.view_paramotor              # LIVE, free flight, powered
+    ../.venv/bin/mjpython -m viewer.view_paramotor --csv data/flights/flight.csv # log odometry
+    ../.venv/bin/mjpython -m viewer.view_paramotor --sweep      # live + brakes cycling
+    ../.venv/bin/mjpython -m viewer.view_paramotor --zoom 12    # camera pulled back
+    ../.venv/bin/mjpython -m viewer.view_paramotor --slow       # 1/20 speed
+    ../.venv/bin/mjpython -m viewer.view_paramotor --freeze     # hold the design pose
+    ../.venv/bin/mjpython -m viewer.view_paramotor --trim       # settle, then hold it
 
 Live is the default. Cyan = suspension lines, red = brake lines, red spoke on
 the propeller disk shows rotation (the disk is axisymmetric, so without it you
@@ -45,10 +45,10 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 
-import paramotor_aero
-import paramotor_params
+from model import paramotor_aero
+from model import paramotor_params
 
-from paramotor_control import sync_prop, smooth_brakes
+from model.paramotor_control import sync_prop, smooth_brakes
 
 
 spin_up = sync_prop            # same thing now: one call ties thrust to rpm
@@ -180,7 +180,7 @@ if SPEED <= 0:
 # scene.xml is the world and <include>s paramotor.xml; the aircraft alone is in
 # paramotor.xml. Scenery is collision-free, so the dynamics are the same either way.
 XML = "paramotor.xml" if args.bare else "scene.xml"
-m = mujoco.MjModel.from_xml_path(str(Path(__file__).parent / XML))
+m = mujoco.MjModel.from_xml_path(str(Path(__file__).resolve().parents[1] / "model" / XML))
 
 
 def make_terrain(model, seed=3):
