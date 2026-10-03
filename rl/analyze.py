@@ -11,6 +11,7 @@ Reads whatever exists in the run directory and writes, into <run>/analysis/:
 
 import argparse
 import csv
+import json
 from pathlib import Path
 
 import matplotlib
@@ -148,10 +149,10 @@ def curriculum_plots(g, out):
     plt.close(fig)
 
 
-def evaluation_plots(s, flights, route_points, out):
+def evaluation_plots(s, flights, route_points, out, route_spacing=10.0):
     paths = list(dict.fromkeys(s["path"]))
     by = {p: s["path"] == p for p in paths}
-    fig, axes = figure(2, 4, "Evaluation: fixed routes at full difficulty, 60 s per flight", height=2.8)
+    fig, axes = figure(2, 4, "Evaluation: fixed routes at full difficulty", height=2.8)
     bars = [
         ("completed", "Completion rate", lambda v: v.mean()),
         ("failed", "Failure rate", lambda v: v.mean()),
@@ -182,7 +183,7 @@ def evaluation_plots(s, flights, route_points, out):
             # The first seed's route, up to a little past the furthest progress.
             r = (route_points["path"] == p) & (route_points["seed"] == seeds[0])
             reach = flights["progress_m"][mask].max() + 40
-            r &= route_points["arc_m"] <= reach
+            r &= route_points["point"] * route_spacing <= reach
             ax.plot(route_points["x_m"][r], route_points["y_m"][r], color=INK_2,
                     linewidth=1.2, linestyle="--", label="route")
         for color, seed in zip(SERIES, seeds):
@@ -257,13 +258,15 @@ def main():
     s = read_csv(evaluation / "summary.csv")
     flights = read_csv(evaluation / "flights.csv")
     route_points = read_csv(evaluation / "routes.csv")
+    meta = evaluation / "meta.json"
+    route_spacing = json.loads(meta.read_text())["route_spacing_m"] if meta.exists() else 10.0
     if m is None:
         ap.error(f"no metrics.csv in {args.run}")
     training_plots(m, out)
     if g is not None:
         curriculum_plots(g, out)
     if s is not None:
-        evaluation_plots(s, flights, route_points, out)
+        evaluation_plots(s, flights, route_points, out, route_spacing)
     print(report(args.run, m, g, s, out))
     print("Wrote", out, flush=True)
 

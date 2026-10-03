@@ -28,15 +28,11 @@ HERE = Path(__file__).parent
 # ----------------------------------------------------------------------------
 G = 1e-3  # gram -> kg
 
-# Number of spanwise canopy panels. Change this alone; the mass table, the
+# Number of spanwise canopy strips. The deformable skin has a spanwise vertex
+# row at both tips and at each strip centre (N_PANEL + 2 rows), so the line
+# stations, which sit at strip centres, land on vertices. The mass table, the
 # arc geometry, the line stations and the brake anchors all scale from it.
 N_PANEL = 14
-
-# Chordwise segments per panel. A panel that is one rigid body spans the whole
-# chord and can never camber, and camber is what makes lift. Splitting the
-# chord into a hinged chain lets aerodynamic pressure curve the section.
-# 1 restores the old rigid panel.
-N_CHORD = 1
 
 M = {
     # --- one merged avionics PCB: 10+30+1.7+3+7.3+2.2+7+4+3 = 68.2 g ---
@@ -51,7 +47,8 @@ M = {
     "servo":      11.8,   # each, x2  = 23.6
     "arm":         2.0,   # servo arm/horn, each, x2
     # Canopy: 65 g of 125 um PEEK skin PLUS the 3 g canopy half of the 6 g line
-    # allowance, split N_PANEL ways.
+    # allowance, split N_PANEL ways (then spread over the skin's vertices by
+    # tributary area, see vertex_masses()).
     #
     # The 3 g used to be eight separate "line-termination tab" geoms, one per
     # suspension station. They were deleted: NO TENDON EVER ATTACHED TO THEM.
@@ -83,8 +80,8 @@ SPAN_FLAT = 1.000        # m, flat laid-out span
 # (https://flyozone.com/paramotor/products/gliders/spyder-3). Cross-checks:
 # Ozone Roadster 4 flat AR 5.1; BGD Dual Motor (tandem) flat AR 5.3.
 AR_FLAT = 5.1
-S_FLAT = SPAN_FLAT ** 2 / AR_FLAT        # 0.250 m^2
-CHORD = S_FLAT / SPAN_FLAT               # 0.250 m mean chord
+S_FLAT = SPAN_FLAT ** 2 / AR_FLAT        # 0.196 m^2
+CHORD = S_FLAT / SPAN_FLAT               # 0.196 m constant chord
 # Projected span / flat span, which is what the arc solve below actually uses.
 # Source: Spyder 3, 7.98 / 10.01 = 0.797 (identical ratio at every size).
 # NOTE: with a constant chord, projected AREA / flat area equals this same
@@ -110,11 +107,7 @@ PHI_HALF = _solve_half_angle(PROJ_FRACTION)   # ~1.1311 rad
 THETA = 2 * PHI_HALF                          # total arc angle
 R_ARC = SPAN_FLAT / THETA                     # ~0.4421 m radius of curvature
 
-PANEL_CX = 0.0                                # panel centre = canopy centre chordwise
 TE_X = -CHORD / 2                             # trailing edge, where the brakes pull
-# Brakes pull the OUTERMOST panel at its OUTBOARD trailing-edge corner, which is
-BRAKE_PANEL = {"L": (N_PANEL - 1, "p"), "R": (0, "n")}
-TE_TAB_INSET = 0.004                          # m, tab sits just inboard of the corner
 
 # ----------------------------------------------------------------------------
 # POD / HARDWARE GEOMETRY  -- box half-sizes (m)
@@ -134,16 +127,24 @@ SERVO_Z = 0.052
 # same one: it has no C_L0, no C_Lalpha and no rate derivatives. Aero now lives in
 # paramotor_aero.py; the coefficients are in paramotor_params.py.
 
-# Chordwise hinge stiffness from plate theory for the real skin:
-#   D = E t^3 / 12(1-nu^2),  k = D * L_hinge / dc
-# PEEK E = 3.6 GPa, t = 125 um, nu = 0.4. This comes out around 1 mN.m/rad,
-# i.e. nearly limp - a 125 um film has almost no bending stiffness, which is
-# why a real paraglider holds its shape with line tension and internal
-# pressure rather than skin stiffness. Scale CHORD_K_SCALE to explore.
+# DEFORMABLE SKIN. The canopy is a MuJoCo flex shell (dim=2) over a grid of
+# point-mass vertices, not a rigid body. Material is the real skin:
+#   PEEK E = 3.6 GPa, t = 125 um, nu = 0.4,  D = E t^3 / 12(1-nu^2) ~ 7e-4 N.m.
+# Bending uses that plate stiffness (elastic2d="bend"); a 125 um film is nearly
+# limp, so the wing holds its shape through line tension and air load, as a
+# real single-skin wing does. In-plane the film is effectively inextensible at
+# these loads (Et = 4.5e5 N/m, strain ~1e-4), so stretch is a flex equality
+# constraint on every edge rather than a spring: a 4.5e5 N/m spring on sub-gram
+# vertices would need a timestep around 0.05 ms to stay stable.
 PEEK_E, PEEK_T, PEEK_NU = 3.6e9, 125e-6, 0.4
 PLATE_D = PEEK_E * PEEK_T**3 / (12 * (1 - PEEK_NU**2))
-CHORD_K_SCALE = 1.0
-CHORD_RANGE = 0.5             # rad, how far each hinge may fold
+FLEX_SOLREF = "0.004 1"       # edge-length constraint: stiff, critically damped
+# Chordwise vertex stations, canopy frame, leading edge first. They include the
+# A and B line rows, so attachments land on vertices. The C (anti-flap) row
+# attaches at the trailing-edge vertex.
+CHORD_STATIONS = (CHORD / 2, 0.060, 0.0, -0.060, TE_X)
+TE_INDEX = len(CHORD_STATIONS) - 1
+ROW_INDEX = {"A": 1, "B": 3, "C": TE_INDEX}
 
 # Scenery. Purely visual: contype/conaffinity are 0, so there is no ground
 # contact and the dynamics are identical with or without it.
@@ -205,10 +206,8 @@ KM_KT = 0.0105               # m
 # The propeller carries a REAL spin DOF with zero armature, so the inertia is
 # entirely the disk's own and H = I*omega is real angular momentum.  MuJoCo's
 # own Coriolis terms then produce M = -(omega_body x H) natively; no callback
-# computes it.  This is also why <option integrator> is "implicit" and NOT
-# "implicitfast": implicitfast drops the Coriolis/centrifugal term from the
-# implicit Jacobian, which is precisely the term generating that moment.
-# Changing integrator for speed silently degrades the propeller gyroscopics.
+# computes it. The integrator is Euler (required by the flex skin), which
+# applies that Coriolis term explicitly, in full.
 I_SPIN = M["prop"] * G * (PROP_D / 2)**2 / 2.0    # kg.m^2, ~2.58e-5
 # T = K_T * omega^2, anchored on the spec's static bench point (410 gf) at an
 # assumed ~10 krpm.
@@ -242,11 +241,8 @@ POD_HP = {
     "cl": (-0.058,  0.040, 0.070),    # C row, anti-flap
     "cr": (-0.058, -0.040, 0.070),
 }
-A_ROW_X = 0.060       # canopy-frame x of the A (front) line row
-B_ROW_X = -0.060      # canopy-frame x of the B (rear) line row
-# C row: an anti-flap line close to the trailing edge, on the INBOARD panels
-
-C_ROW_X = -0.090      # ~96% chord, just forward of the trailing edge
+# A (front) and B (rear) rows are CHORD_STATIONS[1] and [3]. The C row is an
+# anti-flap line at the trailing edge, on the INBOARD stations.
 # Spanwise stations that carry suspension lines, given as span fractions so they
 # stay put when N_PANEL changes. 0.5 is the centre; these bracket it symmetrically.
 #
@@ -280,61 +276,61 @@ def arc_pos(phi: float):
     return 0.0, R_ARC * math.sin(phi), R_ARC * math.cos(phi) - R_ARC
 
 
-# <replicate> zero-pads the generated index to the width of the LARGEST index:
-# 7 panels give panel_0..panel_6, but 14 give panel_00..panel_13. Anything that
-# references a replica by name must use the same padding, so derive it here
-# rather than hard-coding it.
-PAD = len(str(N_PANEL - 1))
+def span_phis():
+    """Arc angle of each spanwise vertex row: both tips and every strip centre.
 
-
-def pidx(i: int) -> str:
-    """Replica index as <replicate> names it."""
-    return f"{i:0{PAD}d}"
-
-
-def chord_seg(x_canopy: float):
-    """(segment index, x within that segment) for a chordwise station."""
-    dc = CHORD / N_CHORD
-    le = CHORD / 2
-    i = min(N_CHORD - 1, max(0, int((le - x_canopy) / dc)))
-    centre = le - dc / 2 - i * dc
-    return i, x_canopy - centre
-
-
-def chord_stiffness() -> float:
-    """Hinge stiffness between chord segments, N.m/rad, from plate theory."""
-    dc = CHORD / N_CHORD
-    hinge_len = 2 * R_ARC * math.sin(THETA / (2 * N_PANEL))
-    return CHORD_K_SCALE * PLATE_D * hinge_len / dc
-
-
-def panel_to_canopy(i: int, lx: float, lz: float):
-    """Canopy-frame position of a panel-local point (lx, 0, lz).
-
-    The panel is rotated -phi about x, so a purely vertical local offset also
-    moves the point in y. Used to place the line-termination tabs at the real
-    attachment stations rather than lumping them at the wing centre.
+    Row 0 is the right tip (negative y); the last row is the left tip.
     """
-    phi = panel_phi(i)
-    _, py, pz = arc_pos(phi)
-    return (PANEL_CX + lx, py + lz * math.sin(phi), pz + lz * math.cos(phi))
+    return [-THETA / 2] + [panel_phi(i) for i in range(N_PANEL)] + [THETA / 2]
 
 
-def te_world(i: int, edge: str = "c"):
-    """World position of a trailing-edge site at qpos0.
+N_SPAN = N_PANEL + 2
+N_CHORDWISE = len(CHORD_STATIONS)
 
-    edge: "c" centre (te), "p" the +y corner (te_p), "n" the -y corner (te_n).
-    The brake attaches at a CORNER, and the corner is offset in panel-local y,
-    which the panel's arc rotation turns into world y AND z. Aiming the arm at
-    the centre instead of the actual anchor throws the aim off and costs travel.
-    """
-    phi = panel_phi(i)
-    _, py, pz = arc_pos(phi)
-    seg = 2 * R_ARC * math.sin(THETA / (2 * N_PANEL))
-    off = {"c": 0.0, "p": seg / 2 - TE_TAB_INSET, "n": -(seg / 2 - TE_TAB_INSET)}[edge]
-    ly, lz = off, -0.0015                      # site offset in the panel frame
-    c, sn = math.cos(-phi), math.sin(-phi)     # panel is rotated -phi about x
-    return (PANEL_CX + TE_X, py + ly * c - lz * sn, Z_CANOPY + pz + ly * sn + lz * c)
+
+def vertex_pos(s: int, c: int):
+    """World position of skin vertex (spanwise row s, chord station c) at qpos0."""
+    _, y, z = arc_pos(span_phis()[s])
+    return CHORD_STATIONS[c], y, Z_CANOPY + z
+
+
+def vname(s: int, c: int) -> str:
+    return f"cv_{s:02d}_{c}"
+
+
+def station_vertex(i: int, row: str):
+    """Vertex carrying the line of strip i, row A/B/C."""
+    return i + 1, ROW_INDEX[row]
+
+
+# Brakes pull the trailing edge at the OUTBOARD tip, one per side.
+BRAKE_VERTEX = {"L": (N_SPAN - 1, TE_INDEX), "R": (0, TE_INDEX)}
+
+
+def _tributary(u):
+    """Half the distance to each neighbour: the length a station represents."""
+    u = list(u)
+    return [((u[min(k + 1, len(u) - 1)] - u[max(k - 1, 0)]) / 2) for k in range(len(u))]
+
+
+def vertex_masses():
+    """Skin mass per vertex (kg), by tributary area; sums to the canopy total."""
+    ws = _tributary([R_ARC * phi for phi in span_phis()])
+    wc = _tributary([-x for x in CHORD_STATIONS])
+    total = N_PANEL * M["panel"] * G
+    norm = sum(ws) * sum(wc)
+    return [[total * ws[s] * wc[c] / norm for c in range(N_CHORDWISE)]
+            for s in range(N_SPAN)]
+
+
+def skin_elements():
+    """Two triangles per grid cell, wound so the normal points up (+z)."""
+    tri = []
+    for s in range(N_SPAN - 1):
+        for c in range(N_CHORDWISE - 1):
+            a, b = s * N_CHORDWISE + c, (s + 1) * N_CHORDWISE + c
+            tri += [a, a + 1, b, b, a + 1, b + 1]
+    return tri
 
 
 def arm_euler(side: str, sgn: float) -> float:
@@ -343,8 +339,7 @@ def arm_euler(side: str, sgn: float) -> float:
     Rotation about +y maps local +x to (cos a, 0, -sin a), so the aiming angle
     is atan2(-dz, dx) in the pivot-to-anchor direction.
     """
-    pan, edge = BRAKE_PANEL[side]
-    tx, _, tz = te_world(pan, edge)
+    tx, _, tz = vertex_pos(*BRAKE_VERTEX[side])
     return math.atan2(-(tz - ARM_POS[2]), tx - ARM_POS[0])
 
 
@@ -365,17 +360,11 @@ def rest_lengths() -> dict:
     out = {}
     for i in LINE_PANELS:
         side = "l" if panel_phi(i) > 0 else "r"
-        rows = [("A", "f" + side, A_ROW_X), ("B", "r" + side, B_ROW_X)]
-        if i in C_PANELS:
-            rows.append(("C", "c" + side, C_ROW_X))
-        for row, hp, x_row in rows:
-            px, py, pz = POD_HP[hp]
-            ax, ay, az = panel_to_canopy(i, x_row, -0.0015)
-            az += Z_CANOPY
-            out[f"line_{row}{i}"] = math.dist((px, py, pz), (ax, ay, az))
+        for row in station_rows(i):
+            hp = {"A": "f", "B": "r", "C": "c"}[row] + side
+            out[f"line_{row}{i}"] = math.dist(POD_HP[hp], vertex_pos(*station_vertex(i, row)))
     for side, sgn in (("L", 1.0), ("R", -1.0)):
-        pan, edge = BRAKE_PANEL[side]
-        out[f"brake_{side}"] = math.dist(arm_tip(sgn), te_world(pan, edge)) + BRAKE_FREE
+        out[f"brake_{side}"] = math.dist(arm_tip(sgn), vertex_pos(*BRAKE_VERTEX[side])) + BRAKE_FREE
     return out
 
 
@@ -390,7 +379,8 @@ def build(tendon_ranges: dict | None = None, servo_mode: str = "position",
     A('  <!-- Generated by build_paramotor.py -- do not hand-edit; edit the generator. -->')
     A('  <compiler angle="radian" autolimits="true" balanceinertia="true"/>')
     A('  <!-- density/viscosity are 0 ON PURPOSE. Aerodynamics come from the explicit coefficient model in paramotor_aero.py (Umenberger and Goktogan 2012, eqs. 8-18), applied through qfrc_passive via mj_applyFT. Any non-zero value here re-enables MuJoCo\'s own fluid model on top of it and every force is counted twice. rho lives in paramotor_params.py. -->')
-    A('  <option timestep="0.0005" integrator="implicitfast" density="0" viscosity="0">')
+    A('  <!-- Euler (semi-implicit), not implicitfast: MuJoCo 3.13 refuses flex elasticity under the implicit integrators (it asks for "discrete", which MuJoCo Warp does not support). Only the soft skin bending is integrated explicitly; stretch is a constraint. -->')
+    A('  <option timestep="0.0005" integrator="Euler" density="0" viscosity="0">')
     A('    <flag multiccd="disable"/>')
     A('  </option>')
     A('  <size njmax="500" nconmax="200"/>')
@@ -517,79 +507,35 @@ def build(tendon_ranges: dict | None = None, servo_mode: str = "position",
 
     # ---------------- CANOPY ----------------
     A('    <!-- ============================ CANOPY ============================= -->')
-    A(f'    <body name="canopy" pos="0 0 {Z_CANOPY:.4f}">')
-    A('      <freejoint name="canopy_free"/>')
-    A('      <!-- The 3 g line-termination allowance is carried by the panels, not by separate tab geoms. There were eight of those; no tendon attached to any of them, because the lines terminate on the att_A_* / att_C_* sites on the panel bodies. -->')
-    # The arch is a constant-increment rotation, so <replicate> states it exactly:
-    # one panel, orbited about the centre of curvature N_PANEL times.
-    # NOTE: <replicate> and <frame> require MuJoCo >= 3.1.6. Older runtimes,
-    # including most mujoco-js / WASM builds, reject them with a bare schema
-    # error. Build with --compat to unroll them into explicit bodies.
-    dphi = THETA / N_PANEL
-    seg = 2 * R_ARC * math.sin(dphi / 2)
-    if compat:
-        A(f'      <!-- Canopy arch, unrolled for MuJoCo < 3.1.6 (no replicate/frame). Geometrically identical to the replicate form. -->')
-        for i in range(N_PANEL):
-            phi = panel_phi(i)
-            _, py, pz = arc_pos(phi)
-            A(f'      <body name="panel_{pidx(i)}" pos="{PANEL_CX:.5f} {py:.5f} {pz:.5f}"')
-            A(f'            euler="{-phi:.6f} 0 0">')
-            A(f'        <geom name="panel_geom_{pidx(i)}" class="skin"')
-            A(f'              size="{CHORD/2:.5f} {seg/2:.5f} {SKIN_T_DRAW/2:.6f}"')
-            A(f'              mass="{M["panel"]*G:.6f}"/>')
-            A(f'        <site name="panel_site_{pidx(i)}" size="0.002" rgba="1 1 0 0.6"/>')
-            A(f'        <site name="te_{pidx(i)}" pos="{TE_X:.5f} 0 -0.0015" size="0.002" rgba="0.6 0.1 0.1 1"/>')
-            A(f'        <site name="te_p_{pidx(i)}" pos="{TE_X:.5f} {seg/2-TE_TAB_INSET:.5f} -0.0015" size="0.002" rgba="0.9 0.1 0.1 1"/>')
-            A(f'        <site name="te_n_{pidx(i)}" pos="{TE_X:.5f} {-(seg/2-TE_TAB_INSET):.5f} -0.0015" size="0.002" rgba="0.9 0.1 0.1 1"/>')
-            A(f'        <site name="att_A_{pidx(i)}" pos="{A_ROW_X:.5f} 0 -0.0015" size="0.002" rgba="0 0.9 0.2 1"/>')
-            A(f'        <site name="att_B_{pidx(i)}" pos="{B_ROW_X:.5f} 0 -0.0015" size="0.002" rgba="0 0.9 0.2 1"/>')
-            A(f'        <site name="att_C_{pidx(i)}" pos="{C_ROW_X:.5f} 0 -0.0015" size="0.002" rgba="0.2 0.6 1.0 1"/>')
-            A('      </body>')
-    else:
-        A(f'      <!-- Canopy arch: one panel replicated {N_PANEL} times about the centre of curvature at z = -R. Cumulative rotation of {dphi:.5f} rad both places and orients each panel. Requires MuJoCo 3.1.6 or newer; older runtimes (most mujoco-js / WASM builds) reject it. Build with the compat flag to unroll it. -->')
-        A(f'      <frame pos="0 0 {-R_ARC:.6f}" euler="{THETA/2 - dphi/2:.6f} 0 0">')
-        A(f'        <replicate count="{N_PANEL}" euler="{-dphi:.6f} 0 0" sep="_">')
-        dc = CHORD / N_CHORD
-        kc = chord_stiffness()
-        # split the panel mass N_CHORD ways, absorbing the 6-decimal rounding
-        # of the XML mass format into the last segment so the total stays exact
-        seg_m = round(M["panel"] / N_CHORD * G, 6)
-        last_m = round(M["panel"] * G - seg_m * (N_CHORD - 1), 6)
-        sites = {"te": (TE_X, 0.0), "te_p": (TE_X, seg / 2 - TE_TAB_INSET),
-                 "te_n": (TE_X, -(seg / 2 - TE_TAB_INSET)),
-                 "att_A": (A_ROW_X, 0.0), "att_B": (B_ROW_X, 0.0),
-                 "att_C": (C_ROW_X, 0.0)}
-        placed = {k: chord_seg(v[0]) for k, v in sites.items()}
-        for c in range(N_CHORD):
-            ind = "          " + "  " * c
-            if c == 0:
-                A(f'{ind}<body name="panel" pos="{CHORD/2 - dc/2:.5f} 0 {R_ARC:.6f}">')
-            else:
-                A(f'{ind}<body name="panelc{c}" pos="{-dc:.5f} 0 0">')
-                A(f'{ind}  <joint name="camber{c}" axis="0 1 0" type="hinge"')
-                A(f'{ind}        stiffness="{kc:.3e}" damping="2e-5" armature="1e-7"')
-                A(f'{ind}        range="{-CHORD_RANGE} {CHORD_RANGE}"/>')
-            A(f'{ind}  <geom name="panel_geom{c}" class="skin"')
-            A(f'{ind}        size="{dc/2:.5f} {seg/2:.5f} {SKIN_T_DRAW/2:.6f}"')
-            A(f'{ind}        mass="{(last_m if c == N_CHORD - 1 else seg_m):.6f}"/>')
-            if c == 0:
-                A(f'{ind}  <site name="panel_site" size="0.002" rgba="1 1 0 0.6"/>')
-            for nm, (segi, lx) in placed.items():
-                if segi == c:
-                    ly = sites[nm][1]
-                    col = {"te": "0.6 0.1 0.1 1", "te_p": "0.9 0.1 0.1 1",
-                           "te_n": "0.9 0.1 0.1 1", "att_A": "0 0.9 0.2 1",
-                           "att_B": "0 0.9 0.2 1", "att_C": "0.2 0.6 1.0 1"}[nm]
-                    A(f'{ind}  <site name="{nm}" pos="{lx:.5f} {ly:.5f} -0.0015"'
-                      f' size="0.002" rgba="{col}"/>')
-        for c in range(N_CHORD - 1, -1, -1):
-            A("          " + "  " * c + "</body>")
-        A('        </replicate>')
-        A('      </frame>')
-    A('')
-
-    A('    </body>  <!-- /canopy -->')
+    A(f'    <!-- Deformable single skin: {N_SPAN} x {N_CHORDWISE} point-mass vertices (spanwise rows at both tips and every strip centre; chord stations LE, A row, mid, B row, TE), each free to translate on three world-axis slides. The flex shell below spans them. Vertex masses are the 68 g skin split by tributary area. -->')
+    masses = vertex_masses()
+    for s_ in range(N_SPAN):
+        for c in range(N_CHORDWISE):
+            x, y, z = vertex_pos(s_, c)
+            n = vname(s_, c)
+            A(f'    <body name="{n}" pos="{x:.6f} {y:.6f} {z:.6f}">')
+            for ax, vec in (("x", "1 0 0"), ("y", "0 1 0"), ("z", "0 0 1")):
+                A(f'      <joint name="{n}_{ax}" type="slide" axis="{vec}"/>')
+            A(f'      <inertial pos="0 0 0" mass="{masses[s_][c]:.8f}" diaginertia="1e-10 1e-10 1e-10"/>')
+            A(f'      <site name="{n}" size="0.002" rgba="1 1 0 0.6"/>')
+            A('    </body>')
     A('  </worldbody>')
+    A('')
+    A('  <deformable>')
+    A(f'    <!-- PEEK skin: bending from plate stiffness D = E t^3/12(1-nu^2) = {PLATE_D:.2e} N.m; stretch is the flex equality below (inextensible film). No contact or self-collision (MuJoCo Warp has no flex self-collision). -->')
+    bodies = " ".join(vname(s_, c) for s_ in range(N_SPAN) for c in range(N_CHORDWISE))
+    A(f'    <flex name="canopy" dim="2" radius="0.0005" rgba="0.85 0.72 0.25 0.7"')
+    A(f'          body="{bodies}"')
+    A(f'          vertex="{" ".join(["0 0 0"] * (N_SPAN * N_CHORDWISE))}"')
+    A(f'          element="{" ".join(map(str, skin_elements()))}">')
+    A('      <contact contype="0" conaffinity="0" selfcollide="none"/>')
+    A(f'      <elasticity young="{PEEK_E:.3e}" poisson="{PEEK_NU}" thickness="{PEEK_T:.3e}" elastic2d="bend"/>')
+    A('    </flex>')
+    A('  </deformable>')
+    A('')
+    A('  <equality>')
+    A(f'    <flex flex="canopy" solref="{FLEX_SOLREF}"/>')
+    A('  </equality>')
     A('')
 
     # ---------------- TENDONS ----------------
@@ -603,17 +549,16 @@ def build(tendon_ranges: dict | None = None, servo_mode: str = "position",
             rng = tr.get(name, 0.40)
             A(f'    <spatial name="{name}" class="line" range="0 {rng:.6f}">')
             A(f'      <site site="hp_{hp}"/>')
-            A(f'      <site site="att_{row}_{pidx(i)}"/>')
+            A(f'      <site site="{vname(*station_vertex(i, row))}"/>')
             A('    </spatial>')
     A('')
-    A('    <!-- Brake lines: servo arm tip straight to the canopy trailing edge, two sites. Tension-only, like the suspension: slack below L0, carrying load at L0. No hinged flap, a paraglider brake pulls the trailing edge itself. -->')
+    A('    <!-- Brake lines: servo arm tip straight to the trailing-edge tip vertex, two sites. Tension-only, like the suspension: slack below L0, carrying load at L0. Pulling it deflects the deformable trailing edge, as on a real single-skin wing. -->')
     for side in ("L", "R"):
         name = f"brake_{side}"
         rng = tr.get(name, 0.40)
         A(f'    <spatial name="{name}" class="brake" range="0 {rng:.6f}">')
         A(f'      <site site="bl_start_{side}"/>')
-        pan, edge = BRAKE_PANEL[side]
-        A(f'      <site site="te_{edge}_{pidx(pan)}"/>')
+        A(f'      <site site="{vname(*BRAKE_VERTEX[side])}"/>')
         A('    </spatial>')
     A('  </tendon>')
     A('')
@@ -745,8 +690,8 @@ def main():
                     choices=["position", "torque", "both"],
                     help="which drive channel(s) to emit per servo (default: position)")
     ap.add_argument("--compat", action="store_true",
-                    help="unroll <replicate>/<frame> for MuJoCo < 3.1.6 "
-                         "(mujoco-js / WASM builds)")
+                    help="older runtimes (mujoco-js / WASM): position servos "
+                         "without kv; joint damping stands in")
     args = ap.parse_args()
 
     out = Path(args.out)

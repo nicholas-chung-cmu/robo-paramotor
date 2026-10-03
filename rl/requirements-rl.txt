@@ -2,7 +2,8 @@
 # jax[cuda13] or jax[cuda12] extra too; see RL.md.
 jax==0.11.2
 mujoco==3.13.0
-mujoco-mjx==3.13.0
+# [warp] adds warp-lang (pinned by mujoco-mjx) for the MuJoCo Warp backend.
+mujoco-mjx[warp]==3.13.0
 flax==0.12.10
 optax==0.2.8
 pytest>=8,<10

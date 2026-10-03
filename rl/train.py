@@ -1,4 +1,4 @@
-"""Feedforward PPO in JAX. Run --help for small, reproducible training runs."""
+"""PPO for the closed-loop control policy (MLP, no recurrent state), in JAX. Run --help for small, reproducible training runs."""
 
 import os
 from pathlib import Path
@@ -21,7 +21,7 @@ import jax.numpy as jp
 import numpy as np
 import optax
 
-from rl.rl_env import EnvConfig, ParamotorEnv, config_from_saved
+from rl.rl_env import EnvConfig, ParamotorEnv, config_from_saved, select
 
 
 @dataclass
@@ -31,7 +31,7 @@ class PPOConfig:
     rollout_steps: int = 128
     updates: int = 1000
     epochs: int = 4
-    minibatches: int = 4
+    minibatches: int = 32  # 16,384-sample minibatches at 4096 envs: 128 gradient steps per update
     hidden_size: int = 128
     learning_rate: float = 3e-4
     gamma: float = 0.997  # ~13 s effective horizon at 25 Hz
@@ -126,13 +126,7 @@ def make_rollout(env, network, cfg):
             done = term | trunc
 
             def reset_finished(states):
-                return jax.tree.map(
-                    lambda x, y: jp.where(
-                        done.reshape((len(done),) + (1,) * (x.ndim - 1)), y, x
-                    ),
-                    states,
-                    fresh,
-                )
+                return select(done, fresh, states)
 
             next_states = jax.lax.cond(
                 jp.any(done), reset_finished, lambda x: x, next_states
@@ -246,13 +240,7 @@ def evaluate_batch(
             (metrics[:, :4], metrics[:, 5, None], active[:, None]), axis=1
         )
         keep = active & ~(term | trunc)
-        states = jax.tree.map(
-            lambda old, nxt: jp.where(
-                keep.reshape((count,) + (1,) * (old.ndim - 1)), nxt, old
-            ),
-            states,
-            new,
-        )
+        states = select(keep, new, states)
         return (states, keep), record
 
     (_, active), records = jax.lax.scan(

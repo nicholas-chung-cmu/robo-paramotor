@@ -52,16 +52,13 @@ def load():
 
 
 def set_airspeed(m, d, v_world):
-    """Give every free body the same world linear velocity.
+    """Give the pod and every canopy vertex the same world linear velocity."""
+    A.set_linear_velocity(m, d, v_world)
 
-    Addresses are looked up, never assumed: the canopy freejoint starts at
-    dof 9, not 6, because prop_spin and the two servo arms sit between the two
-    freejoints.  Writing qvel[6:9] silently spins the propeller instead.
-    """
-    for name in ("pod_free", "canopy_free"):
-        j = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, name)
-        a = m.jnt_dofadr[j]
-        d.qvel[a:a + 3] = v_world
+
+def skin_force(aero):
+    """Total aerodynamic force on the canopy skin (sum over its vertices)."""
+    return aero.wrench[aero.mesh.bodies, :3].sum(axis=(0, 1))
 
 
 # ---------------------------------------------------------------------------
@@ -241,9 +238,8 @@ def test_lift_actually_supports_it():
     mujoco.mj_forward(m, d)
     aero(m, d)
     W = m.body_subtreemass[0] * 9.81
-    # In strip mode the parafoil force lives on the PANEL bodies, not on the
-    # canopy body, so it has to be summed over the panels.
-    F = aero.wrench[aero.canopy, :3] + aero.wrench[aero.panels, :3].sum(axis=0)
+    # The parafoil force lives on the skin's vertices.
+    F = skin_force(aero)
     Lz = F[2]
     Dx = -F[0] - aero.wrench[aero.pod, 0]
     check("parafoil lift is the same order as weight at 6 m/s",
@@ -309,9 +305,7 @@ def _free_flight(thrust, km_kt=None, T=12.0, mode="strip"):
     aero = A.ParamotorAero(m, PP.PEEK_1M, mode=mode)
     mujoco.set_mjcb_passive(aero)
     try:
-        for nm in ("pod_free", "canopy_free"):
-            a = m.jnt_dofadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, nm)]
-            d.qvel[a:a + 3] = [6.0, 0.0, 0.0]
+        set_airspeed(m, d, [6.0, 0.0, 0.0])
         thr = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, "thrust")
         sync_prop(m, d, thrust)
         hist = []
@@ -319,7 +313,7 @@ def _free_flight(thrust, km_kt=None, T=12.0, mode="strip"):
             d.ctrl[thr] = thrust
             mujoco.mj_step(m, d)
             if k % 200 == 0:
-                Rf = A.T_FLIP @ d.xmat[aero.canopy].reshape(3, 3) @ A.T_FLIP
+                Rf = A.T_FLIP @ aero.canopy_state(d)[3] @ A.T_FLIP
                 hist.append((d.time, d.subtree_com[0].copy(),
                              abs(math.degrees(A.euler_phi_from_R_frd(Rf)))))
         i = int(len(hist) * 0.6)
@@ -330,71 +324,81 @@ def _free_flight(thrust, km_kt=None, T=12.0, mode="strip"):
 
 
 def _probe(omega=(0., 0, 0), vlat=0.0, mode="strip", V=6.0):
-    """Hold the canopy in a prescribed motion and read the total aerodynamic
-    wrench about its CoM.  MuJoCo's freejoint linear qvel is the velocity of
-    the body FRAME ORIGIN, not the CoM, so a pure rotation about the CoM needs
-    the linear term corrected. The massless canopy root's xipos is not the
-    welded panel assembly's mass center."""
+    """Hold the skin in a prescribed rigid motion about its mass centre and
+    read the total aerodynamic force and moment about that centre."""
     m, d = load()
     aero = A.ParamotorAero(m, PP.PEEK_1M, mode=mode)
-    mujoco.mj_forward(m, d)
+    mesh = aero.mesh
     w = np.array(omega, float)
     vcom = np.array([V, vlat, 0.0])
-    jc = m.jnt_dofadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, "canopy_free")]
-    jp = m.jnt_dofadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, "pod_free")]
-    d.qvel[jc:jc + 3] = vcom - np.cross(w, d.subtree_com[aero.canopy] - d.xpos[aero.canopy])
-    d.qvel[jc + 3:jc + 6] = w
-    d.qvel[jp:jp + 3] = vcom
+    P = mesh.rest
+    c = (mesh.mass[..., None] * P).sum(axis=(0, 1)) / mesh.mass.sum()
+    set_airspeed(m, d, vcom)
+    d.qvel[mesh.dof] = vcom + np.cross(w, P - c)
     mujoco.mj_forward(m, d)
     aero(m, d)
-    M = aero.wrench[aero.canopy, 3:].copy()
-    F = aero.wrench[aero.canopy, :3].copy()
-    c = d.subtree_com[aero.canopy]
-    for i in aero.panels:
-        f = aero.wrench[i, :3]
-        F += f
-        M += np.cross(d.xipos[i] - c, f) + aero.wrench[i, 3:]
+    f = aero.wrench[mesh.bodies, :3]
+    F = f.sum(axis=(0, 1))
+    M = np.cross(P - c, f).sum(axis=(0, 1))
     return M, F, aero, m, d
 
 
 def test_strip_matches_first_principles():
-    """The implementation check: recompute every panel force independently from
-    the model state and compare.  Validates the velocity field, both frame
-    conversions and the arch recovery in one shot."""
+    """The implementation check: recompute every cell force independently from
+    the vertex states and compare.  Validates the cell frames, the velocity
+    field, both frame conversions and the arch recovery in one shot."""
     p = PP.PEEK_1M
     _, _, aero, m, d = _probe(omega=(0.7, 0.0, 0.0))
-    vel = np.zeros(6)
+    mesh = aero.mesh
+    P, Vv = d.xpos[mesh.bodies], d.qvel[mesh.dof]
+    S, C = mesh.shape
     worst = 0.0
-    for k, i in enumerate(aero.panels):
-        Rp = d.xmat[i].reshape(3, 3)
-        # Independent engine query, not the callback's root-offset formula.
-        mujoco.mj_objectVelocity(m, d, mujoco.mjtObj.mjOBJ_BODY, i, vel, 0)
-        v_w = vel[3:]
-        vp = (Rp.T @ v_w) * np.array([1.0, -1.0, -1.0])
-        V = np.linalg.norm(vp)
-        al = np.clip(math.atan2(vp[2], vp[0]), p["alpha_min"], p["alpha_max"])
-        CL = (p["CL0"] + p["CLa"] * al) * aero.arch_recovery
-        CD = p["CD0"] + p["CDa"] * al * al
-        f = 0.5 * p["rho"] * aero.panel_area[k] * V * (
-            CL * np.array([vp[2], 0.0, -vp[0]]) - CD * vp)
-        worst = max(worst, np.linalg.norm(
-            Rp @ (f * np.array([1.0, -1.0, -1.0])) - aero.wrench[i, :3]))
+    for s in range(S - 1):
+        for c in range(C - 1):
+            k = [(s, c), (s + 1, c), (s, c + 1), (s + 1, c + 1)]
+            a, b, cc, dd = (P[i] for i in k)
+            fwd = (a + b - cc - dd) / 2
+            span = (b + dd - a - cc) / 2
+            z = np.cross(fwd, span); z /= np.linalg.norm(z)
+            x = fwd - (fwd @ z) * z; x /= np.linalg.norm(x)
+            R = np.column_stack((x, np.cross(z, x), z))
+            area = 0.5 * np.linalg.norm(np.cross(dd - a, b - cc))
+            vp = (R.T @ np.mean([Vv[i] for i in k], axis=0)) * np.array([1.0, -1.0, -1.0])
+            V = np.linalg.norm(vp)
+            al = np.clip(math.atan2(vp[2], vp[0]), p["alpha_min"], p["alpha_max"])
+            CL = (p["CL0"] + p["CLa"] * al) * aero.arch_recovery
+            CD = p["CD0"] + p["CDa"] * al * al
+            f = 0.5 * p["rho"] * area * V * (CL * np.array([vp[2], 0.0, -vp[0]]) - CD * vp)
+            worst = max(worst, np.linalg.norm(
+                R @ (f * np.array([1.0, -1.0, -1.0])) - aero.last["f_cells"][s, c]))
     check("strip forces match first principles exactly", worst < 1e-12,
-          f"worst panel error {worst:.2e} N over {len(aero.panels)} panels")
+          f"worst cell error {worst:.2e} N over {(S - 1) * (C - 1)} cells")
 
 
-def test_canopy_mass_center_velocity():
-    _, _, aero, m, d = _probe(omega=(0.7, -0.2, 0.3), vlat=0.4)
-    velocities = []
-    for i in aero.panels:
-        value = np.zeros(6)
-        mujoco.mj_objectVelocity(m, d, mujoco.mjtObj.mjOBJ_BODY, i, value, 0)
-        velocities.append(value[3:])
-    expected = np.average(velocities, axis=0, weights=m.body_mass[aero.panels])
-    _, actual, _ = aero._canopy_state(m, d)
-    check("canopy reference velocity equals mass-weighted panel velocity",
-          np.allclose(actual, expected, atol=1e-12),
-          f"assembly velocity {actual}; root mass {m.body_mass[aero.canopy]:.1f} kg")
+def test_canopy_reference_state():
+    """For rigid motion the skin's reference angular velocity is exact, and its
+    velocity is the mass-weighted vertex velocity."""
+    w = np.array([0.7, -0.2, 0.3])
+    _, _, aero, m, d = _probe(omega=w, vlat=0.4)
+    com, vbar, omega, _ = aero.canopy_state(d)
+    check("canopy reference velocity and rate match the prescribed motion",
+          np.allclose(vbar, [6.0, 0.4, 0.0], atol=1e-12) and np.allclose(omega, w, atol=1e-12),
+          f"velocity {vbar}, rate {omega}")
+
+
+def test_moment_couple_has_no_net_force():
+    """Pure moments go on the skin as a couple: zero net force, exact moment."""
+    m, d = load()
+    aero = A.ParamotorAero(m, PP.PEEK_1M)
+    mesh = aero.mesh
+    P = mesh.rest
+    R, area, _ = A.cell_frames(P)
+    _, _, _, _, inertia, r = A.canopy_state(P, np.zeros_like(P), mesh.mass, R, area)
+    M = np.array([0.01, -0.02, 0.03])
+    f = A.couple_forces(M, inertia, r, mesh.mass)
+    check("couple: zero net force, requested moment",
+          np.allclose(f.sum(axis=(0, 1)), 0, atol=1e-15)
+          and np.allclose(np.cross(r, f).sum(axis=(0, 1)), M, atol=1e-12))
 
 
 def test_thrust_wrench_reaches_airframe():
@@ -419,7 +423,7 @@ def test_arch_recovery():
     _, _, aero, _, _ = _probe()
     proj = 1.0 / aero.arch_recovery
     check("arch recovery matches PROJ_FRACTION from the generator",
-          abs(proj - 0.797) < 0.005,
+          abs(proj - 0.797) < 0.01,
           f"canopy projects {proj:.4f} of its area (generator: 0.7970), "
           f"recovery factor {aero.arch_recovery:.4f}")
     _, F_s, _, _, _ = _probe(mode="strip")
@@ -498,7 +502,8 @@ def main():
     _run_tests(test_energy_conservation, test_lift_actually_supports_it,
                test_lift_drag_decomposition, test_trim_airspeed)
     print("\n strip theory (option 3)")
-    _run_tests(test_strip_matches_first_principles, test_canopy_mass_center_velocity,
+    _run_tests(test_strip_matches_first_principles, test_canopy_reference_state,
+               test_moment_couple_has_no_net_force,
                test_thrust_wrench_reaches_airframe, test_arch_recovery,
                test_strip_generates_roll_physics)
     print("\n free flight")

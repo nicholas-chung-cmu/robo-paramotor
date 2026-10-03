@@ -15,7 +15,8 @@ from model import sensor_spec
 from model.paramotor_aero import ParamotorAero
 from model.paramotor_control import smooth_brakes
 from model.paramotor_params import PEEK_1M
-from rl.rl_env import EnvConfig, ParamotorEnv
+from rl.rl_env import repeat, select
+from rl.rl_env import EnvConfig, ParamotorEnv, quat_mat, quat_mul, rotvec_quat
 from rl.train import advantages, log_probability
 
 
@@ -32,6 +33,26 @@ def initial(env):
     return jax.jit(env.reset)(jax.random.PRNGKey(4))
 
 
+def _rigid_state(m, d, velocity, rates, tilt):
+    """Pod and skin moving together: same translation, rotation and attitude."""
+    from model.paramotor_aero import CanopyMesh
+    from scipy.spatial.transform import Rotation
+    mesh = CanopyMesh(m)
+    rot = Rotation.from_rotvec(tilt)
+    pod = m.joint("pod_free")
+    a, b = pod.qposadr[0], pod.dofadr[0]
+    d.qpos[a + 2] += 40
+    q = rot.as_quat()  # x y z w
+    d.qpos[a + 3 : a + 7] = [q[3], q[0], q[1], q[2]]
+    d.qvel[b : b + 3] = velocity
+    d.qvel[b + 3 : b + 6] = rates  # local frame for a free joint
+    w = rot.apply(rates)
+    centre = mesh.rest.reshape(-1, 3).mean(axis=0)
+    P = rot.apply(mesh.rest.reshape(-1, 3) - centre) + centre + [0, 0, 40]
+    d.qpos[mesh.qpos.reshape(-1, 3)] = P - mesh.rest.reshape(-1, 3)
+    d.qvel[mesh.dof.reshape(-1, 3)] = np.asarray(velocity) + np.cross(w, P - (centre + [0, 0, 40]))
+
+
 def test_native_aero_and_acceleration_parity(env):
     physics = env.physics
     m = physics.native
@@ -43,15 +64,9 @@ def test_native_aero_and_acceleration_parity(env):
         ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
     ]:
         d = mujoco.MjData(m)
-        for a, b in zip(physics.free_qpos, physics.free_dofs):
-            d.qpos[a + 2] += 40
-            d.qvel[b : b + 3] = velocity
-            d.qvel[b + 3 : b + 6] = rates
-        # Include a nonzero attitude and unequal arm positions.
-        delta = np.zeros(m.nv)
-        for b in physics.free_dofs:
-            delta[b + 3 : b + 6] = [0.1, -0.06, 0.2]
-        mujoco.mj_integratePos(m, d.qpos, delta, 1.0)
+        # A nonzero attitude, unequal arm positions and nonzero controls.
+        _rigid_state(m, d, velocity, rates, [0.1, -0.06, 0.2])
+        d.qpos[m.joint("arm_L").qposadr[0]] = 0.4
         d.ctrl[:] = [0.8, 0.2, 0.1]
         try:
             mujoco.set_mjcb_passive(aero)
@@ -59,23 +74,25 @@ def test_native_aero_and_acceleration_parity(env):
             expected = aero.wrench.copy()
         finally:
             mujoco.set_mjcb_passive(None)
-        result = calculate(mjx.put_data(m, d))
+        result = calculate(mjx.put_data(m, d, impl="warp"))
         np.testing.assert_allclose(result.xfrc_applied, expected, atol=2e-5, rtol=2e-4)
-        np.testing.assert_allclose(result.qacc, d.qacc, atol=0.03, rtol=3e-3)
+        # Compare accelerations as force (x each dof's inertia): canopy vertices
+        # weigh under a gram, so float32 force rounding of 1e-4 N alone moves
+        # their accelerations by ~0.2 m/s^2.
+        np.testing.assert_allclose(
+            (np.asarray(result.qacc) - d.qacc) * m.dof_M0, 0.0, atol=5e-4)
         np.testing.assert_allclose(
             result.sensordata, d.sensordata, atol=0.01, rtol=3e-3
         )
 
 
-def test_native_short_rollout_parity(env, initial):
+def test_native_short_rollout_parity(env):
     physics = env.physics
     m = physics.native
+    start = jax.jit(physics.initial)(
+        env.cfg.launch_speed, env.cfg.altitude, env.cfg.initial_thrust)
     d = mujoco.MjData(m)
-    d.qpos[:], d.qvel[:], d.ctrl[:] = (
-        initial.data.qpos,
-        initial.data.qvel,
-        initial.data.ctrl,
-    )
+    d.qpos[:], d.qvel[:], d.ctrl[:] = start.qpos, start.qvel, start.ctrl
     aero = ParamotorAero(m, PEEK_1M)
     try:
         mujoco.set_mjcb_passive(aero)
@@ -85,10 +102,10 @@ def test_native_short_rollout_parity(env, initial):
         mujoco.set_mjcb_passive(None)
     advance = jax.jit(
         lambda data: jax.lax.fori_loop(
-            0, 400, lambda _, x: physics.step(x, with_sensors=False), data
+            0, 400, lambda _, x: physics.step(x), data
         )
     )
-    result = advance(initial.data)
+    result = advance(start)
     np.testing.assert_allclose(result.qpos, d.qpos, atol=1e-3, rtol=1e-4)
     np.testing.assert_allclose(result.qvel, d.qvel, atol=0.05, rtol=5e-3)
 
@@ -105,36 +122,79 @@ def test_brake_step_reaches_99_percent_at_one_second():
     np.testing.assert_allclose(v, rate, atol=1e-12)
 
 
-def test_random_path_limits_and_projection():
-    p, arc = routes.make_path(jax.random.PRNGKey(2))
+def test_random_path_limits():
+    p = routes.make_path(jax.random.PRNGKey(2))
     delta = np.diff(p, axis=0)
     horizontal = np.linalg.norm(delta[:, :2], axis=1)
     grade = delta[:, 2] / horizontal
     heading = np.unwrap(np.arctan2(delta[:, 1], delta[:, 0]))
     assert abs(grade).max() <= 0.10001
-    spacing = float(arc[1] - arc[0])
-    assert abs(np.diff(heading) / spacing).max() <= 0.04001
-    np.testing.assert_allclose(horizontal, spacing, atol=1e-3)
-    straight, s = routes.make_path(jax.random.PRNGKey(0), kind="straight")
-    i, progress, closest, tangent = routes.project(
-        straight, s, jp.array([31.0, 3.0, -2.0]), 2
+    assert abs(np.diff(heading) / 10.0).max() <= 0.04001
+    np.testing.assert_allclose(horizontal, 10.0, atol=1e-3)
+
+
+def test_figure_eight_points_are_evenly_spaced():
+    p = routes.make_path(jax.random.PRNGKey(0), kind="figure_eight")
+    np.testing.assert_allclose(np.linalg.norm(np.diff(p, axis=0), axis=1), 10.0, rtol=0.03)
+
+
+def test_target_segment_and_preview_clamp():
+    straight = routes.make_path(jax.random.PRNGKey(0), kind="straight")
+    i, fraction, closest = routes.nearest_on_segment(
+        straight, jp.int32(4), jp.array([31.0, 3.0, -2.0])
     )
-    assert int(i) == 3  # segment 30-40 m
-    np.testing.assert_allclose(progress, 31.0)
-    np.testing.assert_allclose(closest, [31.0, 0.0, 0.0])
-    np.testing.assert_allclose(tangent, [1.0, 0.0, 0.0])
+    assert int(i) == 3  # segment 30-40 m, into target point 4
+    np.testing.assert_allclose([fraction, *closest], [0.1, 31.0, 0.0, 0.0], atol=1e-5)
+    offsets = jp.array([2, 4, 8])
     np.testing.assert_allclose(
-        routes.preview(straight, s, progress, jp.array([20.0, 40.0]))[:, 0], [51.0, 71.0]
+        routes.preview(straight, jp.int32(4), offsets)[:, 0], [60.0, 80.0, 120.0]
+    )
+    # Past the end the preview holds the last point.
+    np.testing.assert_allclose(
+        routes.preview(straight, jp.int32(98), offsets)[:, 0], [100 * 10.0] * 3
     )
 
 
-def test_figure_eight_projection_stays_on_current_branch():
-    p, arc = routes.make_path(jax.random.PRNGKey(0), kind="figure_eight")
-    index, progress, _, _ = routes.project(p, arc, jp.zeros(3), 0)
-    assert int(index) == 0 and float(progress) == 0
-    # Back at the crossing (~188 m along), a search near index 18 stays there.
-    index, progress, _, _ = routes.project(p, arc, jp.zeros(3), 18)
-    assert 17 <= int(index) <= 21 and float(progress) > 100
+def test_target_passes_at_its_plane_with_graded_reward(env, initial):
+    assert int(initial.target) == 1
+    pos = initial.data.site_xpos[env.m.site("pod_com").id]
+    radius, sigma = env.cfg.success_radius_m, env.cfg.pass_sigma_m
+    # Isolate the pass reward: no shaping, and the action is unchanged.
+    old, env.cfg.progress_reward_per_m = env.cfg.progress_reward_per_m, 0.0
+    try:
+        # The level, straight launch route runs along +x at 3 m/s (0.12 m per
+        # step): put point 1 just ahead, so this step crosses its plane, offset
+        # vertically by the intended miss distance.
+        for miss in (0.5, 4.0, 8.0):
+            shift = pos + jp.array([0.03, 0.0, miss]) - initial.points[1]
+            state = initial.replace(points=initial.points + shift)
+            new, reward, *_ = env.step(state, state.action)
+            assert int(new.target) == 2
+            expected = np.exp(-(max(miss - radius, 0) / sigma) ** 2)
+            np.testing.assert_allclose(float(reward), expected, rtol=0.05, atol=0.01)
+        # A point still ahead is not passed, however close.
+        shift = pos + jp.array([1.0, 0.0, 0.0]) - initial.points[1]
+        state = initial.replace(points=initial.points + shift)
+        new, reward, *_ = env.step(state, state.action)
+        assert int(new.target) == 1 and abs(float(reward)) < 1e-6
+    finally:
+        env.cfg.progress_reward_per_m = old
+
+
+def test_progress_shaping(env, initial):
+    site = env.m.site("pod_com").id
+    new, reward, *_ = env.step(initial, initial.action)
+    assert int(new.target) == 1  # no point passed, no action change
+    before = env._distance_to_go(initial.data.site_xpos[site], initial.points, 1)
+    after = env._distance_to_go(new.data.site_xpos[site], new.points, 1)
+    assert float(before - after) > 0  # flying toward the route
+    np.testing.assert_allclose(
+        float(reward), env.cfg.progress_reward_per_m * float(before - after), rtol=1e-5)
+    # Distance-to-go barely moves when the target advances at a route point.
+    points = initial.points
+    for t in (1, 5, env.cfg.route_points - 2):
+        np.testing.assert_allclose(env._distance_to_go(points[t], points, t),
+                                   env._distance_to_go(points[t], points, t + 1), atol=0.1)
 
 
 def test_gps_hold_freshness_and_history(env, initial):
@@ -256,8 +316,9 @@ def test_sensor_csv_is_complete_and_sourced(env):
         assert float(r["noise_std"]) > 0, name
         assert float(r["rate_hz"]) > 0, name
     defaults = EnvConfig()
-    assert defaults.noise_std == sensor_spec.defaults("noise_std")
-    assert defaults.bias_std == sensor_spec.defaults("bias_std")
+    # Noise is temporarily off by default (todo/TODO.md); restore these then:
+    # defaults.noise_std == sensor_spec.defaults("noise_std"), same for bias_std.
+    assert defaults.noise_std == {} and defaults.bias_std == {}
     # The CSV's GNSS rate is the env's GNSS rate.
     assert float(rows["gps_pos_xy"]["rate_hz"]) == defaults.gps_hz
     assert float(rows["baro_alt"]["rate_hz"]) == defaults.baro_hz
@@ -285,13 +346,14 @@ def test_barometer_holds_between_samples(env, initial):
 
 
 def test_observation_excludes_unmeasurable_channels(env, initial):
-    assert env.frame_size == 6 + 3 + 3 + 3 + 2 + 3 + 1 + 2 + 1 + 2
-    assert env.obs_size == 25 * env.frame_size + 3 * len(env.cfg.preview_m) + 5
+    assert env.frame_size == 6 + 3 + 3 + 3 + 1 + 2 + 1 + 2
+    assert env.obs_size == 25 * env.frame_size + 3 * len(env.cfg.preview_index) + 5
     # Perturbing channels the vehicle cannot measure must not change the frame.
     truth = initial.data.sensordata
     hidden = [i for n in ("vel_body", "pod_angvel", "brake_len_L", "brake_len_R")
               for i in range(env.slices[n].start, env.slices[n].stop)]
-    hidden.append(env.slices["pod_pos"].start + 2)  # GNSS altitude
+    hidden += [env.slices["pod_pos"].start + i for i in range(3)]  # GNSS position
+    hidden += list(range(env.slices["mag"].start, env.slices["mag"].stop))
     values = env._corrupt(truth, jp.zeros(env.n_error), jax.random.PRNGKey(0))
     frame = env._frame(values, initial.origin, jp.zeros(()), jp.array(True))
     moved = values.at[jp.array(hidden)].add(5.0)
@@ -299,8 +361,29 @@ def test_observation_excludes_unmeasurable_channels(env, initial):
         frame, env._frame(moved, initial.origin, jp.zeros(()), jp.array(True)))
 
 
+def test_frame_is_heading_invariant(env, initial):
+    # Yawing the whole vehicle (attitude and world velocity) leaves the frame alone.
+    values = env._corrupt(initial.data.sensordata, jp.zeros(env.n_error), jax.random.PRNGKey(0))
+    yaw = 1.3
+    turn = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]])
+    q = quat_mul(rotvec_quat(jp.array([0.0, 0.0, yaw])), values[env.slices["pod_quat"]])
+    vel = env.slices["pod_vel"]
+    turned = values.at[env.slices["pod_quat"]].set(q).at[vel].set(turn @ values[vel])
+    np.testing.assert_allclose(
+        env._frame(values, initial.origin, jp.zeros(()), jp.array(True)),
+        env._frame(turned, initial.origin, jp.zeros(()), jp.array(True)), atol=1e-5)
+    # Gravity is kept: a vehicle at rest reads 1 g straight up, at any attitude.
+    gravity = np.asarray(env.m.opt.gravity)
+    rest = values.at[env.slices["accel"]].set(
+        quat_mat(values[env.slices["pod_quat"]]).T @ -gravity)
+    frame = env._frame(rest, initial.origin, jp.zeros(()), jp.array(True))
+    np.testing.assert_allclose(frame[9:12], -gravity / 20.0, atol=1e-5)
+
+
 def test_default_noise_statistics(initial):
-    env = ParamotorEnv(EnvConfig(episode_seconds=0.2))
+    env = ParamotorEnv(EnvConfig(episode_seconds=0.2,
+                                 noise_std=sensor_spec.defaults("noise_std"),
+                                 bias_std=sensor_spec.defaults("bias_std")))
     truth = initial.data.sensordata
     keys = jax.random.split(jax.random.PRNGKey(1), 4000)
     zero = jp.zeros(env.n_error)
@@ -311,7 +394,12 @@ def test_default_noise_statistics(initial):
                         ("baro_alt", env.baro),
                         ("gps_pos_xy", env.slices["pod_pos"].start)):
         std = float(np.std(samples[:, index]))
-        np.testing.assert_allclose(std, float(rows[name]["noise_std"]), rtol=0.06)
+        expected = float(rows[name]["noise_std"])
+        if name == "gps_pos_xy":
+            # Clipped at +-1 m (2 sigma at 0.5 m): std of a clipped normal.
+            expected *= 0.9594
+            assert float(np.max(np.abs(samples[:, index] - truth[index]))) <= 1.0 + 1e-6
+        np.testing.assert_allclose(std, expected, rtol=0.06)
     # Attitude error: angle between true and measured quaternions.
     q = truth[env.slices["pod_quat"]]
     dots = np.abs(np.asarray(samples[:, env.slices["pod_quat"]]) @ np.asarray(q))
@@ -323,6 +411,21 @@ def test_default_noise_statistics(initial):
     biases = jax.vmap(lambda k: env.reset(k).bias)(jax.random.split(jax.random.PRNGKey(2), 400))
     np.testing.assert_allclose(float(np.std(biases[:, env.baro])),
                                float(rows["baro_alt"]["bias_std"]), rtol=0.15)
+
+
+def test_select_and_repeat_batched_states(env):
+    reset = jax.jit(jax.vmap(env.reset))
+    a = reset(jax.random.split(jax.random.PRNGKey(1), 3))
+    b = reset(jax.random.split(jax.random.PRNGKey(2), 3))
+    mask = jp.array([True, False, True])
+    merged = select(mask, b, a)
+    np.testing.assert_array_equal(merged.data.qpos, jp.where(mask[:, None], b.data.qpos, a.data.qpos))
+    np.testing.assert_array_equal(merged.points, jp.where(mask[:, None, None], b.points, a.points))
+    tiled = repeat(a, 2)
+    assert tiled.data.qpos.shape[0] == 6 and tiled.obs.shape[0] == 6
+    # The merged batch still steps on MJX Warp.
+    jax.jit(jax.vmap(env.step))(merged, jp.zeros((3, 3)))
+    jax.jit(jax.vmap(env.step))(tiled, jp.zeros((6, 3)))
 
 
 def test_thrust_clamp_matches_xml(env):

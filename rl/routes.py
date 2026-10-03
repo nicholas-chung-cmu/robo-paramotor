@@ -1,4 +1,9 @@
-"""Fixed-shape, untimed routes. Distances and coordinates are in meters."""
+"""Fixed-shape, untimed routes. Distances and coordinates are in meters.
+
+A route is just its points, spaced `spacing` meters apart horizontally (along the
+path for the figure eight). The vehicle works through them in order: the target is
+the first point it has not yet passed, and it never looks anywhere else.
+"""
 
 import jax
 import jax.numpy as jp
@@ -23,7 +28,7 @@ def make_path(key, difficulty=1.0, kind="random", count=101, spacing=10.0):
     The default is ~1 km stored every 10 m; projection and preview interpolate
     linearly between points.
     """
-    s = jp.arange(count) * spacing
+    s = jp.arange(count) * spacing  # distance of each point along the route
     phase = jax.random.uniform(key, (3,), minval=-jp.pi, maxval=jp.pi)
     curvature = (
         difficulty
@@ -40,18 +45,16 @@ def make_path(key, difficulty=1.0, kind="random", count=101, spacing=10.0):
             curvature = 0.02 * jp.sin(s / 30)
         elif kind == "figure_eight":
             # A closed smooth figure eight, with initial tangent along +x.
-            angle = s / 60
+            # Sampled finely, then resampled at equal path length so the
+            # points are `spacing` apart like every other route.
+            angle = jp.linspace(0, count * spacing / 30, 80 * count)
             xy = jp.stack((60 * jp.sin(angle), 30 * jp.sin(2 * angle)), -1)
             rot = jp.array([[1.0, -1.0], [1.0, 1.0]]) / jp.sqrt(2.0)
-            xy = xy @ rot
-            points = jp.concatenate((xy, jp.zeros((count, 1))), -1)
-            arc = jp.concatenate(
-                (
-                    jp.zeros(1),
-                    jp.cumsum(jp.linalg.norm(jp.diff(points, axis=0), axis=1)),
-                )
+            fine = jp.concatenate((xy @ rot, jp.zeros((len(angle), 1))), -1)
+            length = jp.concatenate(
+                (jp.zeros(1), jp.cumsum(jp.linalg.norm(jp.diff(fine, axis=0), axis=1)))
             )
-            return points, arc
+            return jax.vmap(lambda a: jp.interp(s, length, a), 1, 1)(fine)
         elif kind == "climb":
             grade = 0.08 * (1 - jp.exp(-s / 30)) * 0.5 * (1 - jp.tanh((s - 200) / 40))
         elif kind == "descend":
@@ -59,31 +62,24 @@ def make_path(key, difficulty=1.0, kind="random", count=101, spacing=10.0):
     heading = jp.cumsum(curvature * spacing) - curvature[0] * spacing
     increments = spacing * jp.stack((jp.cos(heading), jp.sin(heading), grade), -1)
     points = jp.concatenate((jp.zeros((1, 3)), jp.cumsum(increments[:-1], axis=0)))
-    return points, s  # progress is horizontal distance, including on slopes
+    return points
 
 
-def project(points, arc, position, previous, back=3, ahead=12):
-    """Nearest segment in a bounded neighborhood; cannot jump route branches."""
-    index = jp.clip(
-        previous + jp.arange(-back, ahead + 1, dtype=jp.int32), 0, len(points) - 2
-    )
-    start = points[index]
-    delta = points[index + 1] - start
+def nearest_on_segment(points, target, position):
+    """Closest point on the segment ending at `target` (the first unpassed point).
+
+    No search: the segment comes from the target index alone. Returns
+    (segment index, fraction along it, closest point).
+    """
+    i = jp.clip(target - 1, 0, len(points) - 2)
+    start, end = points[i], points[i + 1]
+    delta = end - start
     fraction = jp.clip(
-        jp.sum((position - start) * delta, -1)
-        / jp.maximum(jp.sum(delta * delta, -1), 1e-8),
-        0,
-        1,
+        jp.dot(position - start, delta) / jp.maximum(jp.dot(delta, delta), 1e-8), 0, 1
     )
-    closest = start + fraction[:, None] * delta
-    best = jp.argmin(jp.sum((position - closest) ** 2, -1))
-    i = index[best]
-    progress = arc[i] + fraction[best] * (arc[i + 1] - arc[i])
-    tangent = delta[best] / jp.maximum(jp.linalg.norm(delta[best]), 1e-8)
-    return i, progress, closest[best], tangent
+    return i, fraction, start + fraction * delta
 
 
-def preview(points, arc, progress, distances):
-    return jax.vmap(
-        lambda s: jp.array([jp.interp(s, arc, points[:, a]) for a in range(3)])
-    )(progress + distances)
+def preview(points, target, offsets):
+    """The points `offsets` indices past the target, clamped to the last point."""
+    return points[jp.clip(target + offsets, 0, len(points) - 1)]

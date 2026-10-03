@@ -81,6 +81,7 @@ in_container() {
   [[ -t 1 ]] && tty=(-t)  # live, coloured output when run from a terminal
   docker run --rm ${gpu[@]+"${gpu[@]}"} ${tty[@]+"${tty[@]}"} ${display[@]+"${display[@]}"} --ipc=host \
     -u "$(id -u):$(id -g)" -e HOME=/tmp -e MPLCONFIGDIR=/tmp \
+    -e WARP_CACHE_PATH=/workspace/runs/.warp_cache \
     -v "$PWD:/workspace" -w /workspace "$IMAGE" "$@"
 }
 

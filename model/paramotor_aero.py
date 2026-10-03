@@ -22,38 +22,49 @@ VERBATIM in the paper's frame and the conversion happens once, at the boundary:
 
 T is its own inverse and its own transpose, so one matrix serves both ways.
 
-TWO-BODY vs RIGID
+DEFORMABLE CANOPY
 -----------------
-The paper welds canopy and fuselage into one rigid body and therefore needs the
-leverage moments of eq. (17), [S_PB][f_P] and [S_FB][f_F], written out
-explicitly.  This model does not: the canopy and the pod are separate free
-bodies. The canopy reference is the MASS CENTRE OF ITS WHOLE RIGID SUBTREE:
-the massless canopy root's xipos is not the fourteen-panel assembly mass centre.
-Strip forces act at panel mass centres; lumped force acts at the assembly mass
-centre, following the paper's simplifying force-reference assumption. Fuselage
-drag acts at the pod body's mass centre. mj_applyFT supplies the force leverage
-through the actual application points; only the pure moments are added explicitly.
-These references do not establish the physical canopy's centre of pressure.
+The paper welds canopy and fuselage into one rigid body. Here the pod is a free
+body and the canopy is a DEFORMABLE SKIN: a MuJoCo flex shell over a grid of
+point-mass vertices (build_paramotor.py). The skin bends, twists and cambers
+under load; nothing about its shape is fixed.
+
+Each grid cell (four neighbouring vertices) is one aerodynamic strip element.
+Its frame comes from the CURRENT vertex positions: x along the local chord
+(trailing edge to leading edge), z along the local surface normal. Its velocity
+is the mean of its corners' velocities. Its force is split equally over its
+four corners. So camber, twist and brake deflection all change the local
+incidence directly.
+
+The canopy reference for the pure moments and the lumped mode is the skin's
+mass centre, mean velocity, mass-weighted angular velocity, and mean frame
+(canopy_state()). Pure moments are applied as the force couple that gives the
+skin that moment with zero net force. These references do not establish the
+physical canopy's centre of pressure.
 
 LUMPED vs STRIP
 ---------------
-mode="strip" (default) applies eqs. (12)/(15) to each of the fourteen spanwise
-panels separately, which generates the roll moment -- damping AND the arc's
-dihedral effect -- from the geometry instead of from a coefficient.  See
-strip_forces_frd().  mode="lumped" is the paper's own single-force form and is
-what the rigid replication of the paper's aircraft must use, since that model
-has no panels.
+mode="strip" (default) applies eqs. (12)/(15) to every cell, which generates the
+roll moment -- damping AND the arc's dihedral effect -- from the geometry
+instead of from a coefficient.  See strip_forces_frd().  mode="lumped" is the
+paper's own single-force form, applied at the skin's mass centre.
 
 BRAKES
 ------
-Brake servos act mechanically through the suspension and trailing-edge tendons.
-There are no additional virtual brake-panel aerodynamic forces.
+Brake servos pull trailing-edge tip vertices through tendons. The deflected
+trailing edge changes those cells' incidence; there are no additional virtual
+brake-panel aerodynamic forces.
+
+The mesh geometry below is written with elementwise array operations only, so
+the same functions serve NumPy here and JAX in mjx/paramotor_mjx.py (GPU matmuls
+default to TF32, which would cost ~1e-3 relative accuracy).
 """
 import math
 import numpy as np
 
 # FLU <-> FRD.  Self-inverse, self-transpose.
 T_FLIP = np.diag([1.0, -1.0, -1.0])
+FLIP = np.array([1.0, -1.0, -1.0])
 
 _EPS_V = 1e-6          # m/s below which no aerodynamic force is generated
 
@@ -187,8 +198,178 @@ def euler_phi_from_R_frd(R_frd):
 
 
 # ============================================================================
+# Deformable-canopy geometry. Elementwise only; xp is numpy or jax.numpy.
+# Grids are (span rows S, chord stations C, 3), chord station 0 = leading edge,
+# span row 0 = right tip.
+# ============================================================================
+
+def _cross(a, b, xp):
+    return xp.stack((a[..., 1] * b[..., 2] - a[..., 2] * b[..., 1],
+                     a[..., 2] * b[..., 0] - a[..., 0] * b[..., 2],
+                     a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]), axis=-1)
+
+
+def _dot(a, b, xp):
+    return (a * b).sum(axis=-1)
+
+
+def _unit(a, xp):
+    return a / xp.maximum(xp.sqrt(_dot(a, a, xp)), 1e-12)[..., None]
+
+
+def to_local(R, v, xp=np):
+    """R^T v for frames R (..., 3, 3) whose columns are the local axes."""
+    return (R * v[..., :, None]).sum(axis=-2)
+
+
+def to_world(R, v, xp=np):
+    """R v."""
+    return (R * v[..., None, :]).sum(axis=-1)
+
+
+def cell_frames(P, xp=np):
+    """Frames and areas of the skin cells from vertex positions P (S, C, 3).
+
+    Returns (R (S-1, C-1, 3, 3) with columns x forward, y left, z normal;
+    area (S-1, C-1); corner-mean of P (S-1, C-1, 3)).
+    """
+    a, b, c, d = P[:-1, :-1], P[1:, :-1], P[:-1, 1:], P[1:, 1:]
+    fwd = 0.5 * (a + b - c - d)          # trailing edge -> leading edge
+    span = 0.5 * (b + d - a - c)         # right -> left
+    z = _unit(_cross(fwd, span, xp), xp)
+    x = _unit(fwd - _dot(fwd, z, xp)[..., None] * z, xp)
+    y = _cross(z, x, xp)
+    R = xp.stack((x, y, z), axis=-1)
+    diag = _cross(d - a, b - c, xp)
+    area = 0.5 * xp.sqrt(_dot(diag, diag, xp))
+    return R, area, 0.25 * (a + b + c + d)
+
+
+def cell_mean(V):
+    """Mean of each cell's four corner values, (S-1, C-1, ...)."""
+    return 0.25 * (V[:-1, :-1] + V[1:, :-1] + V[:-1, 1:] + V[1:, 1:])
+
+
+def spread_to_corners(F, xp=np):
+    """Split each cell's force equally over its four corners -> (S, C, 3)."""
+    q = 0.25 * F
+    pad = lambda x, s, c: xp.pad(x, ((s, 1 - s), (c, 1 - c), (0, 0)))
+    return pad(q, 0, 0) + pad(q, 1, 0) + pad(q, 0, 1) + pad(q, 1, 1)
+
+
+def solve3(A, b, xp=np):
+    """Solve a 3x3 system by Cramer's rule (elementwise, no matmul)."""
+    c0, c1, c2 = A[:, 0], A[:, 1], A[:, 2]
+    det = _dot(c0, _cross(c1, c2, xp), xp)
+    return xp.stack((_dot(b, _cross(c1, c2, xp), xp),
+                     _dot(c0, _cross(b, c2, xp), xp),
+                     _dot(c0, _cross(c1, b, xp), xp))) / det
+
+
+def canopy_state(P, V, mass, R_cells, area, xp=np):
+    """Skin reference state: mass centre, mean velocity, angular velocity, frame.
+
+    The angular velocity is the one that gives the skin's actual angular
+    momentum about its mass centre (exact for rigid motion). The frame averages
+    the cells' chord and normal directions by area. Also returns the inertia
+    tensor about the mass centre and the offsets r of every vertex.
+    """
+    m = mass[..., None]
+    total = mass.sum()
+    com = (m * P).sum(axis=(0, 1)) / total
+    vbar = (m * V).sum(axis=(0, 1)) / total
+    r = P - com
+    rr = _dot(r, r, xp)
+    inertia = (mass[..., None, None] * (rr[..., None, None] * xp.eye(3)
+               - r[..., :, None] * r[..., None, :])).sum(axis=(0, 1))
+    momentum = (m * _cross(r, V - vbar, xp)).sum(axis=(0, 1))
+    omega = solve3(inertia, momentum, xp)
+    w = area[..., None]
+    z = _unit((w * R_cells[..., :, 2]).sum(axis=(0, 1)), xp)
+    x = (w * R_cells[..., :, 0]).sum(axis=(0, 1))
+    x = _unit(x - _dot(x, z, xp) * z, xp)
+    frame = xp.stack((x, _cross(z, x, xp), z), axis=-1)
+    return com, vbar, omega, frame, inertia, r
+
+
+def couple_forces(moment, inertia, r, mass, xp=np):
+    """Vertex forces with zero sum and total moment `moment` about the centre."""
+    alpha = solve3(inertia, moment, xp)
+    return mass[..., None] * _cross(xp.broadcast_to(alpha, r.shape), r, xp)
+
+
+def strip_cells(P, V, p, xp=np):
+    """Strip forces on every cell, world frame.
+
+    Returns (forces (S-1, C-1, 3), alpha_used, alpha_raw, R, area)."""
+    R, area, _ = cell_frames(P, xp)
+    v_local = to_local(R, cell_mean(V), xp) * FLIP
+    speed = xp.sqrt(_dot(v_local, v_local, xp))
+    u, w = v_local[..., 0], v_local[..., 2]
+    alpha_raw = xp.arctan2(w, u)
+    alpha = xp.clip(alpha_raw, p["alpha_min"], p["alpha_max"])
+    cl = (p["CL0"] + p["CLa"] * alpha) * p.get("strip_cl_scale", 1.0)
+    cd = p["CD0"] + p["CDa"] * alpha ** 2
+    lift = xp.stack((w, xp.zeros_like(w), -u), axis=-1)
+    f = (0.5 * p["rho"] * area * speed)[..., None] * (cl[..., None] * lift - cd[..., None] * v_local)
+    f = xp.where((speed > _EPS_V)[..., None], f, 0.0)
+    return to_world(R, f * FLIP, xp), alpha, alpha_raw, R, area
+
+
+# ============================================================================
 # MuJoCo binding
 # ============================================================================
+
+class CanopyMesh:
+    """Where the deformable canopy's vertices live in a compiled model.
+
+    Vertex bodies are named cv_<row>_<station> by build_paramotor.py; each has
+    three world-axis slide joints, so its velocity is its three qvel entries
+    and a force on it is added straight to those three dofs.
+    """
+
+    def __init__(self, model):
+        import mujoco
+        found = {}
+        for b in range(model.nbody):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) or ""
+            if name.startswith("cv_"):
+                _, row, station = name.split("_")
+                found[int(row), int(station)] = b
+        if not found:
+            raise ValueError("model has no deformable canopy (cv_* vertex bodies)")
+        S = 1 + max(k[0] for k in found)
+        C = 1 + max(k[1] for k in found)
+        self.bodies = np.array([[found[s, c] for c in range(C)] for s in range(S)])
+        dof, qpos = np.zeros((S, C, 3), int), np.zeros((S, C, 3), int)
+        for (s, c), b in found.items():
+            if model.body_dofnum[b] != 3 or model.body_parentid[b] != 0:
+                raise ValueError(f"vertex body {b} must be a world child with 3 slides")
+            for k in range(3):
+                j = model.body_jntadr[b] + k
+                if model.jnt_type[j] != mujoco.mjtJoint.mjJNT_SLIDE or model.jnt_axis[j][k] != 1.0:
+                    raise ValueError("vertex slides must be world x, y, z in order")
+                dof[s, c, k] = model.jnt_dofadr[j]
+                qpos[s, c, k] = model.jnt_qposadr[j]
+        self.dof, self.qpos = dof, qpos
+        self.rest = model.body_pos[self.bodies].copy()      # world, at qpos = 0
+        self.mass = model.body_mass[self.bodies].copy()
+        self.shape = (S, C)
+
+    def positions(self, qpos):
+        return self.rest + qpos[self.qpos]
+
+    def velocities(self, qvel):
+        return qvel[self.dof]
+
+
+def set_linear_velocity(model, data, v_world):
+    """Give the pod and every canopy vertex the same world linear velocity."""
+    import mujoco
+    a = model.jnt_dofadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "pod_free")]
+    data.qvel[a:a + 3] = v_world
+    data.qvel[CanopyMesh(model).dof] = v_world
+
 
 class ParamotorAero:
     """Applies the model above to a compiled paramotor MJCF.
@@ -197,60 +378,37 @@ class ParamotorAero:
         aero = ParamotorAero(model, paramotor_params.PEEK_1M)   # strip
         mujoco.set_mjcb_passive(aero)
 
-    mode : "strip"  per-panel forces; roll moment is native (default)
-           "lumped" one force at the canopy CoM, roll from C_lp / C_lphi
+    mode : "strip"  per-cell forces; roll moment is native (default)
+           "lumped" one force at the skin's mass centre, roll from C_lp / C_lphi
     """
 
-    def __init__(self, model, params, canopy="canopy", pod="pod", mode="strip"):
+    def __init__(self, model, params, pod="pod", mode="strip"):
         import mujoco
         self._mj = mujoco
         self.p = dict(params)
         self.mode = mode
         if mode not in ("strip", "lumped"):
             raise ValueError(f"mode must be 'strip' or 'lumped', got {mode!r}")
-        self.canopy = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, canopy)
         self.pod = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, pod)
-        if self.canopy < 0 or self.pod < 0:
-            raise ValueError(f"body not found: {canopy!r} / {pod!r}")
+        if self.pod < 0:
+            raise ValueError(f"body not found: {pod!r}")
+        self.mesh = CanopyMesh(model)
 
         ch, sh = math.cos(self.p["chi"]), math.sin(self.p["chi"])
         self.T_BP = np.array([[ch, 0.0, sh], [0.0, 1.0, 0.0], [-sh, 0.0, ch]])
 
-        # ---- panel inventory -------------------------------------------
-        ids, areas = [], []
-        for b in range(model.nbody):
-            nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) or ""
-            if not nm.startswith("panel_"):
-                continue
-            g = [gg for gg in range(model.ngeom) if model.geom_bodyid[gg] == b]
-            if not g:
-                continue
-            ids.append(b)
-            areas.append(4.0 * model.geom_size[g[0], 0] * model.geom_size[g[0], 1])
-        self.panels = np.array(ids, dtype=int)
-        self.panel_area = np.array(areas)
+        R, area, _ = cell_frames(self.mesh.rest)
+        self.cell_area = area
+        self.arch_recovery = self._arch_recovery(R, area)
+        self.p.setdefault("strip_cl_scale", self.arch_recovery)
+        tot = float(area.sum())
+        if abs(tot - self.p["AP"]) / self.p["AP"] > 0.02:
+            raise ValueError(
+                "skin area is %.5f m^2 but AP = %.5f m^2 (%.1f%% apart). "
+                "The parameter set and the geometry disagree."
+                % (tot, self.p["AP"], 100 * abs(tot - self.p["AP"]) / self.p["AP"]))
 
-        if mode == "strip":
-            if self.panels.size == 0:
-                raise ValueError("mode='strip' but the model has no panel_* bodies")
-            # The fast path computes panel velocities from the canopy's rigid
-            # body state.  That is EXACT only while the panels carry no joints
-            # of their own -- which N_CHORD > 1 would change.
-            free = [int(b) for b in self.panels if model.body_dofnum[b] != 0]
-            if free:
-                raise ValueError(
-                    "panels %s have their own DOFs; the rigid fast path is no "
-                    "longer exact. Use mj_objectVelocity per panel." % free)
-            self.arch_recovery = self._arch_recovery(model)
-            self.p.setdefault("strip_cl_scale", self.arch_recovery)
-            tot = self.panel_area.sum()
-            if abs(tot - self.p["AP"]) / self.p["AP"] > 0.02:
-                raise ValueError(
-                    "panel areas sum to %.5f m^2 but AP = %.5f m^2 (%.1f%% apart). "
-                    "The parameter set and the geometry disagree."
-                    % (tot, self.p["AP"], 100 * abs(tot - self.p["AP"]) / self.p["AP"]))
-
-        # World wrenches at panel/pod CoMs or the canopy assembly CoM.
+        # World wrenches per body (rows of the vertex bodies and the pod).
         self.wrench = np.zeros((model.nbody, 6))
         self._enabled = True
         self.reset_diagnostics()
@@ -261,23 +419,18 @@ class ParamotorAero:
                 "model is active and every force would be counted twice. "
                 "Rebuild with build_paramotor.py." % (model.opt.density, model.opt.viscosity))
 
-    def _arch_recovery(self, model):
-        """sum(A_i) / sum(A_i * n_i.zhat) for the canopy at its rest pose.
+    @staticmethod
+    def _arch_recovery(R, area):
+        """sum(A_i) / sum(A_i * n_i.zhat) for the skin at its rest shape.
 
-        Panel lift follows each panel's normal. This factor normalizes the
-        straight-flow vertical lift to the lumped whole-wing coefficient model.
-        It preserves the existing ~1.253 lift multiplier. The paper supplies
-        whole-wing simulation coefficients, not measured section polars or an
-        arch correction, so this is a provisional normalization convention.
-
-        Computed at the rest pose, which is valid because the canopy is rigid.
-        Pass strip_cl_scale explicitly in the parameter set to override.
+        Cell lift follows each cell's normal. This factor normalizes the
+        straight-flow vertical lift to the lumped whole-wing coefficient model
+        (~1.25 for the arch). The paper supplies whole-wing coefficients, not
+        section polars or an arch correction, so this is a provisional
+        normalization, fixed at the design shape. Pass strip_cl_scale
+        explicitly in the parameter set to override.
         """
-        import mujoco
-        d = mujoco.MjData(model)
-        mujoco.mj_forward(model, d)
-        n_z = np.array([d.xmat[b].reshape(3, 3)[2, 2] for b in self.panels])
-        proj = float((self.panel_area * n_z).sum() / self.panel_area.sum())
+        proj = float((area * R[..., 2, 2]).sum() / area.sum())
         if proj < 0.3:
             raise ValueError(f"canopy projects only {proj:.3f} of its area onto "
                              "the horizontal; geometry looks wrong")
@@ -299,50 +452,53 @@ class ParamotorAero:
     def enabled(self, v):
         self._enabled = bool(v)
 
-    # -- state extraction ----------------------------------------------------
-    def _canopy_state(self, model, data):
-        """World angular velocity and velocity at the rigid assembly CoM."""
-        vel = np.zeros(6)
-        self._mj.mj_objectVelocity(model, data, self._mj.mjtObj.mjOBJ_BODY,
-                                   self.canopy, vel, 0)
-        # mj_objectVelocity reports at xipos, which is only a body reference
-        # for this massless root. Translate to the actual panel-assembly CoM.
-        offset = data.subtree_com[self.canopy] - data.xipos[self.canopy]
-        v_com = vel[3:] + np.cross(vel[:3], offset)
-        return vel[:3].copy(), v_com, data.xmat[self.canopy].reshape(3, 3)
+    def canopy_state(self, data):
+        """(com, mean velocity, angular velocity, frame) of the skin."""
+        P = self.mesh.positions(data.qpos)
+        V = self.mesh.velocities(data.qvel)
+        R, area, _ = cell_frames(P)
+        return canopy_state(P, V, self.mesh.mass, R, area)[:4]
 
     # -- the callback --------------------------------------------------------
     def __call__(self, model, data):
-        # Aero goes into qfrc_passive via mj_applyFT, NOT into xfrc_applied.
-        # xfrc_applied belongs to the user: the viewer's Ctrl+drag writes there,
-        # and a callback that zeroes it each step silently eats the mouse force
-        # on exactly the bodies you want to drag.  mj_applyFT is documented as
-        # "outside the xfrc_applied mechanism" and is the right channel for a
-        # passive force.  self.wrench keeps the record for tests and telemetry.
+        # Aero goes into qfrc_passive, NOT into xfrc_applied. xfrc_applied
+        # belongs to the user: the viewer's Ctrl+drag writes there, and a
+        # callback that zeroes it each step silently eats the mouse force.
+        # self.wrench keeps the record for tests and telemetry.
         self.wrench[:] = 0.0
         if not self._enabled:
             return
-
-        omega_w, v_com_w, R_c = self._canopy_state(model, data)
-        w_body = T_FLIP @ (R_c.T @ omega_w)          # canopy frame, FRD
+        mesh = self.mesh
+        P = mesh.positions(data.qpos)
+        V = mesh.velocities(data.qvel)
+        f_cells, alpha, alpha_raw, R, area = strip_cells(P, V, self.p)
+        com, vbar, omega, R_c, inertia, r = canopy_state(P, V, mesh.mass, R, area)
+        w_body = T_FLIP @ (R_c.T @ omega)              # canopy frame, FRD
 
         if self.mode == "strip":
-            V_P, alpha, alpha_raw = self._apply_strip(data, omega_w, v_com_w)
+            F = spread_to_corners(f_cells)
+            V_P = float(np.linalg.norm(vbar))
             roll_native = True
+            self.last["f_cells"] = f_cells
         else:
-            V_P, alpha, alpha_raw = self._apply_lumped(data, v_com_w, R_c)
+            v_P = self.T_BP @ (T_FLIP @ (R_c.T @ vbar))
+            f_P, a_l, a_raw_l, V_P = parafoil_force_frd(v_P, self.p)
+            F_total = R_c @ (T_FLIP @ (self.T_BP.T @ f_P))   # eq. (16)
+            F = mesh.mass[..., None] * F_total / mesh.mass.sum()
+            alpha, alpha_raw = np.array([a_l]), np.array([a_raw_l])
+            area = None
             roll_native = False
+            self.last["f_P"] = f_P.copy()
 
-        # Pure moments go on the canopy in both modes.  In strip mode the roll
-        # row is suppressed: the panel distribution already produced it.
+        # Pure moments, as a zero-net-force couple on the skin. In strip mode
+        # the roll row is suppressed: the cell distribution already produced it.
         phi = euler_phi_from_R_frd(T_FLIP @ R_c @ T_FLIP)
-        # C_ma needs ONE incidence.  In strip mode take the area-weighted mean
-        # of the panel incidences: that is the lumped equivalent of the
-        # distribution, and it reduces to the single value in lumped mode.
-        a_mean = float(np.average(alpha, weights=(self.panel_area
-                                                  if self.mode == "strip" else None)))
+        a_mean = float(np.average(alpha, weights=area))
         M_P = pure_moments_frd(V_P, w_body, a_mean, phi, self.p, roll_native)
-        self.wrench[self.canopy, 3:] += R_c @ (T_FLIP @ M_P)
+        M_w = R_c @ (T_FLIP @ M_P)
+        F = F + couple_forces(M_w, inertia, r, mesh.mass)
+        self.wrench[mesh.bodies, :3] = F
+        data.qfrc_passive[mesh.dof] += F
 
         # ---- fuselage ------------------------------------------------------
         vel = np.zeros(6)
@@ -352,61 +508,19 @@ class ParamotorAero:
         v_F = T_FLIP @ (R_f.T @ vel[3:])
         f_F, alphaF, V_F = fuselage_force_frd(v_F, self.p)
         self.wrench[self.pod, :3] = R_f @ (T_FLIP @ f_F)
-
-        # ---- hand the accumulated wrenches to MuJoCo -----------------------
-        for bid in np.flatnonzero(np.abs(self.wrench).sum(axis=1) > 0.0):
-            point = (data.subtree_com[self.canopy] if bid == self.canopy
-                     else data.xipos[bid])
-            self._mj.mj_applyFT(model, data,
-                                self.wrench[bid, :3], self.wrench[bid, 3:],
-                                point, int(bid), data.qfrc_passive)
+        self._mj.mj_applyFT(model, data, self.wrench[self.pod, :3], np.zeros(3),
+                            data.xipos[self.pod], self.pod, data.qfrc_passive)
 
         # ---- diagnostics ---------------------------------------------------
         self.n_calls += 1
-        raw_hi = float(np.max(alpha_raw)) if np.size(alpha_raw) else 0.0
-        raw_lo = float(np.min(alpha_raw)) if np.size(alpha_raw) else 0.0
         if not np.allclose(alpha, alpha_raw):
             self.n_alpha_clamped += 1
         if V_P >= _EPS_V:
-            self.alpha_raw_min = min(self.alpha_raw_min, raw_lo)
-            self.alpha_raw_max = max(self.alpha_raw_max, raw_hi)
-        self.last.update(V_P=V_P, alpha=a_mean,
-                         alpha_raw=float(np.mean(alpha_raw)), phi=phi,
-                         M_P=M_P.copy(), f_F=f_F.copy(), V_F=V_F, alphaF=alphaF)
-
-    # -- per-panel strip theory ---------------------------------------------
-    def _apply_strip(self, data, omega_w, v_com_w):
-        ids = self.panels
-        R_p = data.xmat[ids].reshape(-1, 3, 3)               # panel -> world
-        r_w = data.xipos[ids] - data.subtree_com[self.canopy]
-
-        # Rigid body: every panel's CoM velocity follows from the canopy's.
-        v_w = v_com_w[None, :] + np.cross(omega_w[None, :], r_w)
-
-        # world FLU -> panel FLU -> panel FRD
-        v_panel = np.einsum('nji,nj->ni', R_p, v_w) * np.array([1.0, -1.0, -1.0])
-
-        f_frd, alpha, alpha_raw, V = strip_forces_frd(v_panel, self.panel_area, self.p)
-
-        # panel FRD -> panel FLU -> world
-        f_w = np.einsum('nij,nj->ni', R_p, f_frd * np.array([1.0, -1.0, -1.0]))
-        self.wrench[ids, :3] = f_w
-
-        self.last["f_panel"] = f_w
-        self.last["V_panel"] = V
-        # A single reference airspeed for the pure-moment terms: the canopy CoM.
-        V_ref = float(np.linalg.norm(v_com_w))
-        return V_ref, alpha, alpha_raw
-
-    # -- the paper's single lumped force ------------------------------------
-    def _apply_lumped(self, data, v_com_w, R_c):
-        v_body = T_FLIP @ (R_c.T @ v_com_w)
-        v_P = self.T_BP @ v_body
-        f_P, alpha, alpha_raw, V_P = parafoil_force_frd(v_P, self.p)
-        f_body = self.T_BP.T @ f_P               # eq. (16)
-        self.wrench[self.canopy, :3] = R_c @ (T_FLIP @ f_body)
-        self.last["f_P"] = f_P.copy()
-        return V_P, np.array([alpha]), np.array([alpha_raw])
+            self.alpha_raw_min = min(self.alpha_raw_min, float(np.min(alpha_raw)))
+            self.alpha_raw_max = max(self.alpha_raw_max, float(np.max(alpha_raw)))
+        self.last.update(V_P=V_P, alpha=a_mean, alpha_raw=float(np.mean(alpha_raw)),
+                         phi=phi, M_P=M_P.copy(), M_world=M_w, f_F=f_F.copy(),
+                         V_F=V_F, alphaF=alphaF, com=com, vbar=vbar, omega=omega)
 
     def envelope_report(self):
         if not self.n_calls:

@@ -64,6 +64,7 @@ class OdometryCSV:
     """
     def __init__(self, model, stream):
         self.model, self.stream = model, stream
+        self.mesh = paramotor_aero.CanopyMesh(model)
         self.data = mujoco.MjData(model)
         self.writer = csv.writer(stream)
         self.next_time, self.previous = 0.0, None
@@ -99,7 +100,12 @@ class OdometryCSV:
                 course_rate = float(np.degrees(change) / (d.time-last_time))
 
         def attitude(body):
-            R = d.xmat[m.body(body).id].reshape(3, 3)
+            if body == "canopy":  # deformable skin: its mean frame
+                P = self.mesh.positions(d.qpos)
+                Rc, area, _ = paramotor_aero.cell_frames(P)
+                R = paramotor_aero.canopy_state(P, np.zeros_like(P), self.mesh.mass, Rc, area)[3]
+            else:
+                R = d.xmat[m.body(body).id].reshape(3, 3)
             return np.degrees([np.arctan2(R[2, 1], R[2, 2]),
                                np.arcsin(np.clip(-R[2, 0], -1, 1)),
                                np.arctan2(R[1, 0], R[0, 0])]).tolist()
@@ -240,21 +246,12 @@ if args.aero != "off":
 
 
 def launch(speed):
-    """Give both free bodies the same forward velocity at t=0.
-
-    Addresses are looked up: the canopy freejoint starts at dof 9, not 6,
-    because prop_spin and the two servo arms sit between the two freejoints.
-    """
-    for name in ("pod_free", "canopy_free"):
-        j = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, name)
-        if j >= 0:
-            a = m.jnt_dofadr[j]
-            d.qvel[a:a + 3] = [speed, 0.0, 0.0]
+    """Give the pod and every canopy vertex the same forward velocity at t=0."""
+    paramotor_aero.set_linear_velocity(m, d, [speed, 0.0, 0.0])
 
 
 launch(args.wind)
 
-CANOPY = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "canopy")
 POD = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "pod")
 THRUST = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, "thrust")
 servos = [a for a in (mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, n)
@@ -356,8 +353,8 @@ def step():
     #
     # xfrc_applied is the MOUSE's channel and is cleared here each step.
     # Aerodynamics deliberately does not use it -- ParamotorAero applies its
-    # wrenches to qfrc_passive through mj_applyFT -- so Ctrl+drag works on the
-    # canopy and panels instead of being overwritten every step.
+    # forces to qfrc_passive -- so Ctrl+drag works on the pod and the skin's
+    # vertices instead of being overwritten every step.
     d.xfrc_applied[:] = 0
     if PERT is not None:
         mujoco.mjv_applyPerturbForce(m, d, PERT)

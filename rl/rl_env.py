@@ -1,7 +1,6 @@
 """Batched-friendly MJX path following. No Gym wrappers or global callbacks."""
 
 from dataclasses import dataclass, field
-import math
 from typing import Any
 import jax
 import jax.numpy as jp
@@ -10,9 +9,10 @@ import mujoco
 import numpy as np
 
 from rl import routes
-from model import sensor_spec
 from model.paramotor_control import smooth_brakes
 from mjx.paramotor_mjx import ParamotorMJX
+from mujoco.mjx._src.types import tree_path_to_attr_str
+from mujoco.mjx.warp import types as warp_types
 
 
 def quat_mul(a, b):
@@ -43,6 +43,13 @@ def quat_mat(q):
     ])
 
 
+def heading_mat(rotation):
+    """Yaw-only part of a body-to-world rotation: heading frame to world."""
+    yaw = jp.arctan2(rotation[1, 0], rotation[0, 0])
+    co, si = jp.cos(yaw), jp.sin(yaw)
+    return jp.array([[co, -si, 0], [si, co, 0], [0, 0, 1]])
+
+
 @dataclass
 class EnvConfig:
     control_hz: int = 25
@@ -51,19 +58,25 @@ class EnvConfig:
     baro_hz: int = 20  # BMP581 output rate; held between samples like GPS
     history_hz: int = 25  # observation history is downsampled from sensor_hz
     history_seconds: float = 1.0
-    episode_seconds: float = 60.0
+    episode_seconds: float = 300.0
     thrust_max: float = 1.0  # hardware thrust clamp; equals the XML ctrlrange
     initial_thrust: float = 0.8
-    launch_speed: float = 6.0
+    launch_speed: float = 3.0
     altitude: float = 40.0
-    preview_m: tuple = (20.0, 40.0, 80.0)  # look-ahead points along the route
+    preview_index: tuple = (2, 4, 8)  # look-ahead, in points past the target
+    success_radius_m: float = 2.0  # full pass reward within this 3D miss distance
+    pass_sigma_m: float = 2.0  # pass reward decays as a Gaussian beyond the radius
+    progress_reward_per_m: float = 0.1  # shaping per metre of distance-to-go closed
+    gps_noise_limit_m: float = 1.0  # hard clip on GNSS horizontal error
     route_points: int = 101  # route stored as route_points, route_spacing_m apart (~1 km)
     route_spacing_m: float = 10.0
     path_kind: str = "random"
     curriculum: bool = True
     # Datasheet values from sensors.csv, keyed by its channel names.
-    noise_std: dict = field(default_factory=lambda: sensor_spec.defaults("noise_std"))
-    bias_std: dict = field(default_factory=lambda: sensor_spec.defaults("bias_std"))
+    # Noise is temporarily off by default (see todo/TODO.md). The datasheet
+    # values are sensor_spec.defaults("noise_std") and ("bias_std").
+    noise_std: dict = field(default_factory=dict)
+    bias_std: dict = field(default_factory=dict)
     bias_walk_std: dict = field(default_factory=dict)  # channel units / sqrt(second)
     gps_latency_s: float = 0.0
     gps_dropout: float = 0.0
@@ -83,6 +96,35 @@ def config_from_saved(env):
     return EnvConfig(**{**LEGACY_ROUTE, **env})
 
 
+def _batched(path):
+    """MJX Warp keeps some Data fields (shared index arrays) without a batch axis."""
+    return warp_types._BATCH_DIM["Data"].get(tree_path_to_attr_str(path), True)
+
+
+def _map_batched(fn, *states):
+    """fn over every per-environment leaf of batched States; shared leaves kept."""
+    data = jax.tree_util.tree_map_with_path(
+        lambda path, x, *ys: fn(x, *ys) if _batched(path) else x,
+        *[s.data for s in states])
+    rest = jax.tree.map(fn, *[s.replace(data=None) for s in states])
+    return rest.replace(data=data)
+
+
+def select(mask, new, old):
+    """Per environment: new where mask is true, else old (batched States).
+
+    Use this, not jax.tree.map(jp.where, ...): that breaks on MJX Warp Data.
+    """
+    return _map_batched(
+        lambda x, y: jp.where(mask.reshape(mask.shape + (1,) * (x.ndim - mask.ndim)), y, x),
+        old, new)
+
+
+def repeat(states, count):
+    """count copies of a batch of States, back to back along the batch axis."""
+    return _map_batched(lambda x: jp.concatenate([x] * count), states)
+
+
 @struct.dataclass
 class State:
     data: Any
@@ -97,11 +139,8 @@ class State:
     brake_velocity: Any
     action: Any
     points: Any
-    arc: Any
     origin: Any
-    path_index: Any
-    observed_index: Any
-    progress: Any
+    target: Any  # index of the first route point not yet passed
     steps: Any
     envelope_time: Any
     episode_return: Any
@@ -109,7 +148,7 @@ class State:
 
 
 class ParamotorEnv:
-    """Actions [-1,1]: thrust, left brake, right brake. z is world-up.
+    """Actions [-1,1]: thrust, brake (both sides), brake difference (+ = right). z is world-up.
 
     Measurements (state.sensors) are the XML sensordata, corrupted, followed by
     one barometric altitude. The noise/bias vectors carry three more entries,
@@ -155,12 +194,12 @@ class ParamotorEnv:
             )
         if c.route_points < 2 or c.route_spacing_m <= 0:
             raise ValueError("A route needs at least two points and positive spacing")
-        # Projection searches a fixed distance around the last match (about
-        # 6 m back, 24 m ahead), whatever the route's point spacing.
-        self.project_back = max(1, math.ceil(6.0 / c.route_spacing_m))
-        self.project_ahead = max(1, math.ceil(24.0 / c.route_spacing_m))
-        if not c.preview_m or any(x <= 0 for x in c.preview_m):
-            raise ValueError("Preview distances must be positive")
+        if not c.preview_index or any(int(x) != x or x < 0 for x in c.preview_index):
+            raise ValueError("Preview offsets must be non-negative integers")
+        if c.success_radius_m <= 0 or c.pass_sigma_m <= 0 or c.gps_noise_limit_m < 0:
+            raise ValueError("Success radius must be positive, GPS limit non-negative")
+        if c.progress_reward_per_m < 0:
+            raise ValueError("Progress reward cannot be negative")
         if c.position_randomization_m < 0 or c.envelope_grace_s < 0:
             raise ValueError("Randomization and envelope grace cannot be negative")
         self.latency_ticks = round(c.gps_latency_s * c.sensor_hz)
@@ -206,7 +245,7 @@ class ParamotorEnv:
         self.frame_size = int(self._frame(
             jp.zeros(self.n_meas).at[self.slices["pod_quat"].start].set(1.0),
             jp.zeros(3), jp.zeros(()), jp.array(True)).size)
-        self.obs_size = self.history_count * self.frame_size + len(c.preview_m) * 3 + 5
+        self.obs_size = self.history_count * self.frame_size + len(c.preview_index) * 3 + 5
         # The launch state depends only on the config, never on the reset key:
         # build it once here instead of re-running the forward pass every reset.
         self.launch = jax.jit(lambda: self.physics.initial(
@@ -228,16 +267,23 @@ class ParamotorEnv:
         return jp.array(out)
 
     def _frame(self, values, origin, age, fresh):
-        """One observation frame: only channels the real vehicle measures."""
-        rotation = quat_mat(values[self.slices["pod_quat"]])
+        """One observation frame: only channels the real vehicle measures.
+
+        Vectors are in the heading frame (world rotated by the estimated yaw), as
+        is the route preview, so nothing depends on which way the vehicle points.
+        Absolute horizontal position and the compass are left out for that reason.
+        """
         s = self.slices
+        rotation = quat_mat(values[s["pod_quat"]])
+        heading = heading_mat(rotation)
+        tilt = heading.T @ rotation  # estimated attitude with yaw removed
+        # Accelerometer specific force (gravity included) rotated into world.
+        accel = rotation @ values[s["accel"]]
         return jp.concatenate((
-            rotation[:, 0], rotation[:, 1],               # 6-D estimated attitude
-            values[s["gyro"]] / 3.0,
-            values[s["accel"]] / 20.0,
-            values[s["mag"]] / 0.5,
-            (values[s["pod_pos"]][:2] - origin[:2]) / 100.0,  # GPS horizontal
-            values[s["pod_vel"]] / 10.0,
+            tilt[:, 0], tilt[:, 1],                       # 6-D roll/pitch
+            values[s["gyro"]] / 3.0,                      # body rates
+            heading.T @ accel / 20.0,
+            heading.T @ values[s["pod_vel"]] / 10.0,      # GPS velocity
             values[s["prop_omega"]] / 1000.0,
             values[s["arm_pos_L"]] / 3.0,
             values[s["arm_pos_R"]] / 3.0,
@@ -249,35 +295,28 @@ class ParamotorEnv:
         # Guidance uses measured position/orientation, never true aircraft pose.
         # GNSS gives x/y; the barometer gives altitude.
         pos = state.sensors[self.slices["pod_pos"]].at[2].set(state.sensors[self.baro])
-        quat = state.sensors[self.slices["pod_quat"]]
-        w, x, y, z = quat
-        yaw = jp.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-        i, s, _, _ = routes.project(state.points, state.arc, pos, state.observed_index,
-                                    self.project_back, self.project_ahead)
-        goals = (
-            routes.preview(state.points, state.arc, s, jp.array(self.cfg.preview_m))
-            - pos
-        )
-        co, si = jp.cos(yaw), jp.sin(yaw)
-        local = goals @ jp.array([[co, -si, 0], [si, co, 0], [0, 0, 1]])
-        preview = jp.clip(local / jp.array(self.cfg.preview_m)[:, None], -3, 3).ravel()
+        heading = heading_mat(quat_mat(state.sensors[self.slices["pod_quat"]]))
+        offsets = jp.array(self.cfg.preview_index)
+        goals = routes.preview(state.points, state.target, offsets) - pos
+        local = goals @ heading  # rows: heading.T @ goal
+        preview = jp.clip(
+            local / (jp.maximum(offsets, 1) * self.cfg.route_spacing_m)[:, None], -3, 3
+        ).ravel()
         # Known command-filter states, not unmeasured physical servo states.
         controls = jp.concatenate((state.action, state.brake_velocity / 10))
         obs = jp.concatenate((state.history.ravel(), preview, controls))
-        return state.replace(observed_index=i, obs=jp.clip(jp.nan_to_num(obs), -10, 10))
+        return state.replace(obs=jp.clip(jp.nan_to_num(obs), -10, 10))
 
     def reset(self, key, difficulty=0.0):
         key, pk, nk, bk = jax.random.split(key, 4)
-        points, arc = self.route(pk, difficulty, self.cfg.path_kind)
+        points = self.route(pk, difficulty, self.cfg.path_kind)
         data = self.launch
         origin = data.site_xpos[self.m.site("pod_com").id]
         points = points + origin
-        # Preserve rigging geometry: shift both free bodies together.
+        # Preserve rigging geometry: shift the pod and the whole skin together.
         offset = jax.random.uniform(nk, (3,), minval=-1.0, maxval=1.0)
         offset = offset * jp.array([0.0, 1.0, 0.3]) * self.cfg.position_randomization_m
-        qpos = data.qpos
-        for a in self.physics.free_qpos:
-            qpos = qpos.at[a : a + 3].add(offset)
+        qpos = self.physics.translate(data.qpos, offset)
         data = self.physics.forward(data.replace(qpos=qpos))
         bias = jax.random.normal(bk, (self.n_error,)) * self.bias_scale
         key, nk = jax.random.split(key)
@@ -290,7 +329,7 @@ class ParamotorEnv:
             sensors[self.gps_indices][None, :], self.latency_ticks + 1, axis=0
         )
         action = jp.array(
-            [2 * self.cfg.initial_thrust / self.cfg.thrust_max - 1, -1.0, -1.0]
+            [2 * self.cfg.initial_thrust / self.cfg.thrust_max - 1, -1.0, 0.0]
         )
         state = State(
             data=data,
@@ -305,11 +344,8 @@ class ParamotorEnv:
             brake_velocity=jp.zeros(2),
             action=action,
             points=points,
-            arc=arc,
             origin=origin,
-            path_index=integer_zero,
-            observed_index=integer_zero,
-            progress=zero,
+            target=jp.ones((), jp.int32),  # point 0 is the launch position
             steps=integer_zero,
             envelope_time=zero,
             episode_return=zero,
@@ -320,6 +356,9 @@ class ParamotorEnv:
     def _corrupt(self, truth, bias, key):
         """sensordata -> measurements: additive noise/bias, baro, estimated attitude."""
         error = bias + self.noise * jax.random.normal(key, (self.n_error,))
+        gps = self.channels["gps_pos_xy"]
+        limit = self.cfg.gps_noise_limit_m
+        error = error.at[jp.array(gps)].set(jp.clip(error[jp.array(gps)], -limit, limit))
         baro = truth[self.slices["pod_pos"]][2:3]
         values = jp.concatenate((truth, baro)) + error[: self.n_meas]
         # Estimator error is a small world-frame rotation of the true attitude.
@@ -327,6 +366,33 @@ class ParamotorEnv:
         q = q / jp.maximum(jp.linalg.norm(q), 1e-8)
         q = jp.where(q[0] < 0, -q, q)  # avoid quaternion sign jumps in history
         return values.at[self.slices["pod_quat"]].set(q)
+
+    def _distance_to_go(self, pos, points, target):
+        """Metres left: to the target point, then along the rest of the route.
+
+        Continuous when the target advances (up to the success radius), so its
+        change rewards closing on a point without penalizing passing it.
+        """
+        last = self.cfg.route_points - 1
+        here = jp.linalg.norm(pos - points[jp.minimum(target, last)])
+        return here + jp.maximum(last - target, 0) * self.cfg.route_spacing_m
+
+    def _crossing(self, points, target, start, end):
+        """Did this step cross the target's plane, and how close did it come?
+
+        The plane passes through the target point, perpendicular to the route
+        tangent there. The miss distance is the closest approach to the point
+        along this step's straight-line motion, start -> end.
+        """
+        last = self.cfg.route_points - 1
+        index = jp.minimum(target, last)
+        point = points[index]
+        tangent = points[jp.minimum(index + 1, last)] - points[index - 1]
+        tangent = tangent / jp.maximum(jp.linalg.norm(tangent), 1e-9)
+        crossed = (target <= last) & (jp.dot(end - point, tangent) >= 0)
+        motion = end - start
+        u = jp.clip(jp.dot(point - start, motion) / jp.maximum(jp.dot(motion, motion), 1e-12), 0, 1)
+        return crossed, jp.linalg.norm(start + u * motion - point)
 
     def _sample(self, state, tick):
         key, nk, bk, dk = jax.random.split(state.key, 4)
@@ -372,7 +438,10 @@ class ParamotorEnv:
 
     def step(self, state, action):
         action = jp.clip(action, -1, 1)
-        target = 1.5 * (action[1:] + 1)
+        # Symmetric brake in [0, 1] and a differential (positive = right brake),
+        # mixed into per-side commands and clipped to the line travel.
+        brake, diff = 0.5 * (action[1] + 1), action[2]
+        target = 3.0 * jp.clip(jp.array([brake - diff, brake + diff]), 0.0, 1.0)
         thrust = 0.5 * (action[0] + 1) * self.cfg.thrust_max
 
         def substep(s, i):
@@ -380,9 +449,9 @@ class ParamotorEnv:
                 s.brakes, s.brake_velocity, target, self.dt, jp
             )
             data = self.physics.command(s.data, thrust, brakes)
-            data = self.physics.forward(data, with_sensors=False)
             s = s.replace(
-                data=self.physics.integrate(data), brakes=brakes, brake_velocity=rate
+                data=self.physics.step(data),
+                brakes=brakes, brake_velocity=rate,
             )
             tick = s.steps * self.substeps + i + 1
 
@@ -396,14 +465,22 @@ class ParamotorEnv:
             s = jax.lax.cond((i + 1) % self.sensor_stride == 0, sample, lambda x: x, s)
             return s, None
 
-        previous_action, previous_progress = state.action, state.progress
+        previous_action = state.action
+        start = state.data.site_xpos[self.m.site("pod_com").id]
+        before = self._distance_to_go(start, state.points, state.target)
         state, _ = jax.lax.scan(substep, state, jp.arange(self.substeps))
         data = state.data  # the last substep always refreshed the sensors
         pos = data.site_xpos[self.m.site("pod_com").id]
-        index, progress, closest, tangent = routes.project(
-            state.points, state.arc, pos, state.path_index,
-            self.project_back, self.project_ahead,
-        )
+        last = self.cfg.route_points - 1
+        # The target is passed by crossing its plane (true position), however far
+        # off; the reward is graded by the miss distance, so a miss never stalls.
+        reached, miss = self._crossing(state.points, state.target, start, pos)
+        excess = jp.maximum(miss - self.cfg.success_radius_m, 0) / self.cfg.pass_sigma_m
+        pass_reward = jp.where(reached, jp.exp(-excess**2), 0.0)
+        target = state.target + reached
+        # Tracking error against the segment into the target, for metrics and failure.
+        index, fraction, closest = routes.nearest_on_segment(state.points, target, pos)
+        progress = (index + fraction) * self.cfg.route_spacing_m
         error = pos - closest
         lateral = jp.linalg.norm(error[:2])
         vertical = jp.abs(error[2])
@@ -413,9 +490,7 @@ class ParamotorEnv:
         )
         envelope = jp.where(outside, state.envelope_time + self.control_dt, 0.0)
         finite = jp.all(jp.isfinite(data.qpos)) & jp.all(jp.isfinite(data.qvel))
-        canopy_below = (
-            data.xipos[self.physics.canopy, 2] < data.xipos[self.physics.pod, 2]
-        )
+        canopy_below = self.physics.canopy_com(data)[2] < data.xipos[self.physics.pod, 2]
         failed = (
             (~finite)
             | (pos[2] < 0)
@@ -424,20 +499,16 @@ class ParamotorEnv:
             | canopy_below
             | (envelope > self.cfg.envelope_grace_s)
         )
-        completed = progress >= state.arc[-1] - 2
+        completed = target > last
         terminated = failed | completed
         truncated = state.steps + 1 >= self.episode_steps
-        delta = jp.clip(
-            progress - previous_progress,
-            -2 * self.cfg.launch_speed * self.control_dt,
-            2 * self.cfg.launch_speed * self.control_dt,
-        )
-        gate = jp.exp(-0.5 * ((lateral / 5) ** 2 + (vertical / 3) ** 2))
-        reward = (
-            gate * delta / (self.cfg.launch_speed * self.control_dt)
-            - 0.15 * (lateral / 5) ** 2
-            - 0.15 * (vertical / 3) ** 2
-            - 0.02 * jp.sum((action - previous_action) ** 2)
+        # Graded pass reward, plus progress shaping: the drop in distance-to-go.
+        # A plain difference with no terminal term, so over a flight it sums to
+        # the distance gained and a crash earns nothing extra.
+        progress_reward = self.cfg.progress_reward_per_m * (
+            before - self._distance_to_go(pos, state.points, target))
+        reward = pass_reward + progress_reward - 0.02 * jp.sum(
+            (action - previous_action) ** 2
         )
         reward = jp.nan_to_num(reward, nan=-10.0, posinf=-10.0, neginf=-10.0)
         reward = jp.where(failed, -10.0, reward) + jp.where(completed, 10.0, 0.0)
@@ -445,8 +516,7 @@ class ParamotorEnv:
             data=data,
             steps=state.steps + 1,
             action=action,
-            path_index=index,
-            progress=progress,
+            target=target,
             envelope_time=envelope,
             episode_return=state.episode_return + reward,
         )

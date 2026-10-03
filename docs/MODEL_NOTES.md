@@ -35,8 +35,8 @@ Without that callback there is **no lift and no drag** and the vehicle simply
 falls. The constructor refuses to run if `density`/`viscosity` are non-zero, so
 the double-counting failure cannot happen silently.
 
-Aero reaches MuJoCo through `qfrc_passive` (via `mj_applyFT`), *not*
-`xfrc_applied`. `xfrc_applied` belongs to the mouse: a callback that clears it
+Aero reaches MuJoCo through `qfrc_passive` (vertex forces straight onto their
+slide dofs, pod drag via `mj_applyFT`), *not* `xfrc_applied`. `xfrc_applied` belongs to the mouse: a callback that clears it
 each step eats Ctrl+drag on exactly the bodies you want to grab.
 
 Every BOM item is a **block** with its budgeted mass set explicitly: the model is
@@ -75,13 +75,14 @@ callback, and `paramotor_mjx.py` supplies the same strip model for training.
 Native forces use `qfrc_passive` via `mj_applyFT`; MJX supplies equivalent
 `xfrc_applied` wrenches. Built-in fluid density and viscosity remain zero.
 
-Default strips apply linear lift and quadratic drag to fourteen rigid panels
-at their local velocities and orientations. Panel forces produce roll moments,
-so an additional lumped roll-damping term is suppressed. Explicit pitch/yaw
-moments remain provisional because panel forces also contribute those moments.
-Pod drag is separate. Brakes act mechanically through servo arms and tendons;
-there is no local camber change or brake-specific aerodynamic coefficient.
-`mode="lumped"` remains available for comparison.
+Default strips apply linear lift and quadratic drag to every cell of the
+deformable skin (§7), in each cell's current frame and at its corners' mean
+velocity, so camber, twist and brake deflection change local incidence.
+Cell forces produce roll moments, so an additional lumped roll-damping term is
+suppressed. Explicit pitch/yaw moments remain provisional because cell forces
+also contribute those moments. Pod drag is separate. Brakes pull the trailing
+edge through servo arms and tendons; there is no brake-specific aerodynamic
+coefficient. `mode="lumped"` remains available for comparison.
 
 ### References and assumptions corrected in this review
 
@@ -112,7 +113,7 @@ derivative does not establish bank stability in the coupled vehicle.
 
 Twelve-second neutral-brake runs start at 6 m/s with matching rotor speed.
 Maximum bank and alpha excursions are measured after the initial four seconds;
-an excursion means any panel exceeds the coefficient envelope.
+an excursion means any skin cell exceeds the coefficient envelope.
 
 | Thrust | Maximum bank | Final rotor speed | Steps outside envelope |
 |---:|---:|---:|---:|
@@ -174,45 +175,58 @@ all requirements hit a long-path error in an Orbax test fixture; installing the
 remaining MJX/Flax/Optax wheels supplied the imports needed for the ten checks.
 Full training dependencies and GPU execution were not verified in this review.
 
-## 7. Closer-to-reality canopy models
+## 7. Canopy model: deformable shell (option D)
 
-The canopy is **rigid**: one free body, fourteen welded panels. Cheap, stable, gets
-the gross pendulum dynamics right. It cannot do camber change under brake, tip
-twist, spanwise load redistribution, collapse or cravat — which for a single-skin
-PEEK wing is precisely the unknown the spec flags.
+The canopy is a **deformable single skin** (option D, adopted 2026-10-03). The
+earlier rigid canopy (fourteen welded panels on one free body) is gone: it could
+not bend, twist or camber, so brake response and wing behaviour were wrong in
+kind.
 
-**A. Rigid (current).** Brake input rotates the whole wing. Fine for developing
-the CAN stack, actuator loop, logging and a first attitude controller. Do not use
-it to size the canopy.
+**Structure.** A MuJoCo `<flex>` shell (dim 2) over a 16 × 5 grid of point-mass
+vertices: spanwise rows at both tips and every strip centre, chordwise stations
+at the leading edge, A row, mid chord, B row and trailing edge. Each vertex is a
+world-child body with three world-axis slide joints (240 DOFs in all) and an
+attachment site; the 68 g skin mass is split over them by tributary area.
+Suspension lines attach to the A-row vertex of each line station (C row: the
+trailing-edge vertex, inboard), brakes to the trailing-edge tip vertices.
 
-**B. Spanwise twist DOFs.** Hinge each panel about its own spanwise axis with
-torsional stiffness and damping; keep the arc rigid. Six extra DOFs. Captures
-what brakes actually do — local incidence and camber change near the tips — and
-gives a real asymmetric-brake yaw mechanism instead of whole-wing rotation. Needs
-a torsional stiffness per panel, obtainable from a bench twist test of a PEEK
-strip. **Best value for the effort; recommended next step once aero is real.**
+**Material.** Real 125 µm PEEK: bending from plate stiffness
+`D = Et³/12(1−ν²)` ≈ 7×10⁻⁴ N·m (E = 3.6 GPa, ν = 0.4) via flex elasticity
+(`elastic2d="bend"`). In-plane the film is treated as inextensible: every edge
+length is a flex equality constraint (`solref 0.004 1`). At these loads the real
+strain is ~1e-4, and a true 4.5×10⁵ N/m membrane spring on sub-gram vertices
+would need a ~0.05 ms timestep. No self-collision (MuJoCo Warp has none for
+flex), so cravats and folds can pass through the skin.
 
-**C. Hinged arc chain.** Hinge panels to each other about chordwise axes with
-stiffness, so the arch deforms and tips can fold. Captures roll response,
-asymmetric loading, the onset of tip collapse. Combine with B. The arc's
-equilibrium shape becomes load-dependent, so line lengths must be re-trimmed.
+**Integrator.** Euler (semi-implicit). MuJoCo 3.13 rejects flex elasticity
+under `implicit`/`implicitfast` and asks for `discrete`, which MuJoCo Warp does
+not support. Only the soft bending is explicit; stretch is a constraint.
 
-**D. Deformable shell via `<flexcomp>`.** MuJoCo 3.x can simulate a 2-D shell
-with the elasticity plugin: real membrane and bending stiffness, wrinkling, lines
-attached to vertices. Closest thing to a 125 µm single skin, and unusually here
-**the parameters are identifiable** — PEEK's modulus (~3.6 GPa) and the thickness
-are both known, so bending stiffness follows from `Et³/12(1−ν²)` rather than
-being invented. Cost: far slower, self-collision tuning, and the suspension
-attachment scheme must be rebuilt against vertices. This is the right model for
-"does this canopy hold its shape at all", which is the scored risk.
+**Aerodynamics.** Every grid cell is a strip element: frame from the current
+vertex positions (chord and surface normal), velocity from its corners, force
+split over its corners (§6). Pitch/yaw pure moments act on the skin as a
+zero-net-force couple about its mass centre.
 
-**E. Co-simulation.** MuJoCo for pod, lines, actuators, contact; an external
-aerodynamic solver over the deformed shape returning forces via `xfrc_applied`.
-Highest fidelity, most work, only worth it once a real wing exists to validate
-against.
+**Cost.** About 11× slower than the rigid canopy on MuJoCo Warp: 4,119 vs 47,081
+control steps/s at 4096 environments (RTX 5080).
 
-Recommended order: **real aero (§6) → B → D if canopy shape stability becomes the
-binding question.**
+**Finding: the specified skin does not hold its shape.** In free flight from
+6 m/s the skin folds chordwise within 0.2 s (chord 0.196 → ~0.1 m, cell
+incidence −75° to +110°) and the vehicle spirals down at ~5 m/s sink. Adding A,
+B and C lines at every station does not help: the unsupported leading edge folds
+back. The numbers agree: at q ≈ 22 Pa the 38 mm of leading edge ahead of the A
+row carries ~0.016 N·m/m against D ≈ 7×10⁻⁴ N·m, a ~4 cm curl radius. A real
+single-skin wing holds its nose with battens/rods and its section with many line
+attachments. This is exactly the risk this model exists to expose. Two caveats:
+the cell aerodynamics are flat-plate strips, not a membrane pressure solution,
+so the details of the collapse are approximate, but the order-of-magnitude
+argument above does not depend on them.
+
+**Other options considered.** B (spanwise twist hinges on rigid panels) and C
+(hinged arc chain) were partial steps toward D and are superseded. E
+(co-simulation with an external aerodynamic solver over the deformed shape) is
+the higher-fidelity path for the aerodynamics, once a real wing exists to
+validate against.
 
 ---
 
@@ -267,7 +281,7 @@ quickest way to confirm the brake lines actually move.
   and A/B/C rows. Brakes attach at one trailing-edge point per side; a real brake
   cascade spreads over several. Add parallel tendons from the same origin site.
 * Brake tendons are tension-only length limits and can go slack on release.
-  They act on a rigid canopy, so they cannot change local camber or tip twist.
+  They pull the deformable trailing edge (§7).
 * Collision is disabled throughout (`contype=0 conaffinity=0`). No ground, no
   launch, no landing.
 * Aerodynamic load on the lines is not modelled. The pod now has drag (§6);

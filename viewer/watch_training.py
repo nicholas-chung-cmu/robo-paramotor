@@ -34,7 +34,7 @@ import numpy as np
 
 from model.paramotor_aero import ParamotorAero
 from model.paramotor_params import PEEK_1M
-from rl.rl_env import ParamotorEnv, config_from_saved
+from rl.rl_env import ParamotorEnv, config_from_saved, select
 from rl.train import ActorCritic, load_checkpoint
 
 ROUTE_RGBA = np.array([1.0, 0.65, 0.1, 1.0])
@@ -56,13 +56,7 @@ def make_flyer(env, network, steps):
             new, _, terminated, truncated, metrics = jax.vmap(env.step)(states, action)
             done = terminated | truncated
             keep = active & ~done
-            states = jax.tree.map(
-                lambda old, nxt: jp.where(
-                    keep.reshape((keep.shape[0],) + (1,) * (old.ndim - 1)), nxt, old
-                ),
-                states,
-                new,
-            )
+            states = select(keep, new, states)
             d = new.data
             return (states, keep), (d.qpos, d.ctrl, metrics, active)
 

@@ -31,7 +31,7 @@ import numpy as np
 from tqdm import tqdm
 
 from rl import routes
-from rl.rl_env import ParamotorEnv, config_from_saved
+from rl.rl_env import ParamotorEnv, config_from_saved, repeat, select
 from rl.train import ActorCritic, load_checkpoint
 
 COLUMNS = [
@@ -106,13 +106,7 @@ def make_evaluator(env, network, checkpoints, trace, view):
             done = terminated | truncated
             # Freeze completed episodes so later scan steps cannot diverge.
             keep = active & ~done
-            states = jax.tree.map(
-                lambda old, nxt: jp.where(
-                    keep.reshape((keep.shape[0],) + (1,) * (old.ndim - 1)), nxt, old
-                ),
-                states,
-                new,
-            )
+            states = select(keep, new, states)
             record = (rows[trace], active[trace])
             if view:
                 record += (data.qpos[0], data.qvel[0], data.ctrl[0])
@@ -178,7 +172,7 @@ def main():
         "--episodes", type=int, default=20, help="number of fixed seeds per route"
     )
     ap.add_argument("--seed", type=int, default=10000)
-    ap.add_argument("--seconds", type=float, default=60.0)
+    ap.add_argument("--seconds", type=float, default=300.0)
     ap.add_argument(
         "--trace", type=int, default=3,
         help="episodes per route recorded step by step in flights.csv (all are in summary.csv)",
@@ -215,12 +209,12 @@ def main():
     keys = jp.stack([jax.random.PRNGKey(seed) for seed in seeds])
     states = jax.jit(jax.vmap(env.reset, in_axes=(0, None)))(keys, 1.0)
     tracks = [env.route(key, 1.0, name) for key, name in zip(keys, names)]
-    points = jp.stack([p for p, _ in tracks]) + states.origin[:, None, :]
-    states = states.replace(points=points, arc=jp.stack([a for _, a in tracks]))
+    points = jp.stack(tracks) + states.origin[:, None, :]
+    states = states.replace(points=points)
     states = jax.vmap(env._observation)(states)
     C, F = len(saved), len(names)
     N = C * F
-    states = jax.tree.map(lambda x: jp.concatenate([x] * C), states)
+    states = repeat(states, C)
 
     traced = [j for j, s in enumerate(seeds) if s - args.seed < args.trace]
     trace = jp.array([c * F + j for c in range(C) for j in traced], dtype=jp.int32)
@@ -251,7 +245,7 @@ def main():
     stats = jax.device_get(stats)
     rows = np.concatenate([r[0] for r in records])  # (steps, traced, columns)
     alive = np.concatenate([r[1] for r in records])
-    route_points, route_arcs = np.asarray(points), np.asarray(states.arc[:F])
+    route_points = np.asarray(points)
     count = np.maximum(stats["steps"], 1)
     header = ["path", "seed", "duration_s", "progress_m", "mean_cross_track_m", "max_cross_track_m",
               "mean_altitude_error_m", "alpha_outside_fraction", "return", "failed", "completed"]
@@ -270,16 +264,17 @@ def main():
         with (out / "flights.csv").open("w", newline="") as f, (out / "routes.csv").open("w", newline="") as g:
             flights, route_writer = csv.writer(f), csv.writer(g)
             flights.writerow(["path", "seed"] + COLUMNS)
-            route_writer.writerow(["path", "seed", "arc_m", "x_m", "y_m", "z_m"])
+            route_writer.writerow(["path", "seed", "point", "x_m", "y_m", "z_m"])
             for t, j in enumerate(traced):
                 k = c * len(traced) + t
                 for row in rows[alive[:, k], k]:
                     flights.writerow([names[j], seeds[j], *row])
-                for arc, point in zip(route_arcs[j], route_points[j]):
-                    route_writer.writerow([names[j], seeds[j], arc, *point])
+                for n, point in enumerate(route_points[j]):
+                    route_writer.writerow([names[j], seeds[j], n, *point])
         (out / "meta.json").write_text(json.dumps(
             {"seconds": args.seconds, "episodes": args.episodes, "seed": args.seed,
              "trace": args.trace, "launch_speed": cfg.launch_speed,
+             "route_spacing_m": cfg.route_spacing_m,
              "checkpoint": str(checkpoint)}, indent=2))
         s = np.array([r[3] for r in summary]), np.array([r[9] for r in summary])
         print(f"{checkpoint}: {F} flights, mean progress {s[0].mean():.1f} m, "

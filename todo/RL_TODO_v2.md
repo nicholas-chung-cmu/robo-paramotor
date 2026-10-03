@@ -14,9 +14,9 @@ Source of truth for the model is `MODEL_NOTES.md`; hardware is
 | # | Decision | Consequence |
 |---|---|---|
 | D1 | **Use MJX.** | Aero must be rewritten as pure JAX. `SubprocVecEnv`, the global-callback dispatcher, and the C++/Rust aero rewrite are all **dropped**. |
-| D2 | **Brakes stay geometric** (no δ_a coefficients). | `brake_wrench_frd()` stays zero. Brake authority comes only from the tendons rotating the rigid canopy. Accepted approximation. |
+| D2 | **Brakes stay geometric** (no δ_a coefficients). | `brake_wrench_frd()` stays zero. Brake authority comes only from the tendons deflecting the deformable trailing edge (D4). |
 | D3 | **Thrust is hardware-clamped to the validated envelope (0–1.0 N).** | No stall model or re-rig needed before training. The clamp must live in the model (`ctrlrange`), not only in the env. |
-| D4 | **Rigid canopy** (MODEL_NOTES §7 option A). *Proposed by Claude, not yet agreed. Open for review.* | Panels have no DOFs, so the rigid-body velocity path in the aero stays exact. A flexible canopy via `flexcomp` + the elasticity plugin is not available in MJX. Spanwise-twist hinges (§7 B) are plain joints and do work in MJX. |
+| D4 | **Deformable canopy (MODEL_NOTES §7 option D), adopted.** The rigid canopy is rejected. | Flex shell with PEEK bending and inextensible edges, Euler integrator, strip aero per skin cell, on MuJoCo Warp. About 11× slower than rigid. In the current rigging the skin does not hold its shape in flight (§7 finding). |
 
 ## Measured baseline (2026-10-01)
 

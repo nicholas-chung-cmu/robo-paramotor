@@ -1,9 +1,12 @@
 # Paramotor PPO
 
-This trains a feedforward policy with JAX, MuJoCo MJX, Flax and Optax. The existing
+This trains a closed-loop control policy with JAX, MuJoCo MJX, Flax and Optax:
+every 40 ms it maps the sensor history and route preview to thrust and brake
+commands. The network is a plain MLP with no recurrent state. The existing
 interactive simulator still works independently. The JAX port uses the accepted
-strip aerodynamics and mechanical brake tendons; it does not add the removed
-brake-panel lift or drag.
+strip aerodynamics on the deformable canopy (a flex shell, see
+docs/MODEL_NOTES.md §7) and mechanical brake tendons; it does not add the
+removed brake-panel lift or drag.
 
 ## Install
 
@@ -25,12 +28,20 @@ for your driver. Do not install both extras in one environment. Omitting the CUD
 extra provides a CPU installation for debugging. `JAX_PLATFORMS=cpu` explicitly
 selects the CPU. GPU execution should print `CudaDevice`, not `CpuDevice`.
 
-MJX may print that optional `warp` imports are unavailable. This implementation
-explicitly uses the JAX backend, so Warp is not a required dependency.
+Physics runs on MJX's MuJoCo Warp backend (`warp-lang`, pinned via
+`mujoco-mjx[warp]` in `rl/requirements-rl.txt`). Each substep is one Warp `step`
+call, including the canopy skin's bending and edge constraints. Warp runs on the
+GPU, and on the CPU for `--cpu` debugging. With the deformable canopy it runs
+about 4.1k control steps/s at 4096 envs (RTX 5080), roughly 11× slower than the
+old rigid canopy (47k), so one PPO update takes about 2 minutes.
 
-MuJoCo and MJX are pinned together. `mjx/paramotor_mjx.py` uses a few private MJX
-forward-stage functions to inject aerodynamic forces at the correct point in the
-solver. Run the parity tests before upgrading either package.
+The aerodynamic forces are computed in JAX from `qpos`/`qvel` alone (canopy
+vertices are world-axis slide bodies, the pod a free body), with the same mesh
+geometry functions as the native model, and applied as `xfrc_applied`. That
+code avoids matrix products, and the pod's use full float32 precision, because
+GPU matmuls default to TF32 (about 1e-3 relative error).
+MuJoCo, MJX and Warp are pinned together; run the parity tests before upgrading.
+`docker/train.sh` keeps Warp's compiled kernels in `runs/.warp_cache`.
 
 ## Docker
 
@@ -148,7 +159,7 @@ ROS launch-testing plugins). Without a local environment, run the suite in the
 image with live output: `docker/train.sh --test` (pytest arguments may follow,
 e.g. `docker/train.sh --test tests/test_rl.py -k gps`).
 
-Evaluation cost is set by the number of sequential physics steps (60 s of
+Evaluation cost is set by the number of sequential physics steps (the episode length of
 flight), not by the number of flights, so more flights per route are nearly
 free and give tighter statistics. Every flight's summary goes to `summary.csv`;
 only the first `--trace` (default 3) episodes per route are recorded step by
@@ -194,7 +205,7 @@ only what you need through JSON, without editing code:
     "gps_hz": 5,
     "history_hz": 25,
     "history_seconds": 1.0,
-    "episode_seconds": 60.0,
+    "episode_seconds": 300.0,
     "curriculum": true,
     "thrust_max": 1.0,
     "noise_std": {"gyro": [0.0, 0.0, 0.0], "accel": 0.0, "gps_pos_xy": 0.0},
@@ -216,17 +227,23 @@ configuration stored in the checkpoint; CLI overrides still apply.
 The policy sees only what the vehicle can measure. `model/sensors.csv` lists every
 sensor: part, units, rate, white-noise σ, per-episode bias σ, the datasheet figure
 each value comes from, and the channels deliberately left out. It is the single
-source of truth: `EnvConfig.noise_std` and `bias_std` default to its values, and
-`tests/test_rl.py` checks that the CSV and the environment agree.
+source of truth for noise: `sensor_spec.defaults("noise_std")` and
+`("bias_std")` read it, and `tests/test_rl.py` checks that the CSV and the
+environment agree. **Noise is temporarily off by default**: `EnvConfig.noise_std`
+and `bias_std` default to `{}` while the heading-frame observations are tuned
+(see `todo/TODO.md`). Pass the `sensor_spec` defaults to turn it back on.
+
+Every vector in a frame is in the **heading frame**: world axes rotated by the
+estimated yaw, z up. The route preview uses the same frame, so the policy sees
+the same inputs whichever way it points. For that reason absolute GNSS x/y and
+the compass are not in the frame (the compass still feeds the yaw estimate).
 
 | Frame entry | Source | Rate | Size |
 | --- | --- | --- | --- |
-| estimated attitude, 6-D (first two columns of R) | estimator from IMU + compass | 100 Hz | 6 |
-| `gyro` | LSM6DSOX | 100 Hz | 3 |
-| `accel` | LSM6DSOX | 100 Hz | 3 |
-| `mag` | QMC5883L | 100 Hz | 3 |
-| GNSS horizontal position | GM10 Pro V3 (u-blox M10) | 5 Hz, held | 2 |
-| GNSS velocity | GM10 Pro V3 | 5 Hz, held | 3 |
+| estimated roll/pitch, 6-D (first two columns of R with yaw removed) | estimator from IMU + compass | 100 Hz | 6 |
+| `gyro` (body frame) | LSM6DSOX | 100 Hz | 3 |
+| `accel` specific force, gravity included (`R·accel`, heading frame) | LSM6DSOX + attitude | 100 Hz | 3 |
+| GNSS velocity (heading frame) | GM10 Pro V3 (u-blox M10) | 5 Hz, held | 3 |
 | `prop_omega` | ESC telemetry | 100 Hz | 1 |
 | `arm_pos_L`, `arm_pos_R` | servo telemetry | 100 Hz | 2 |
 | barometric altitude | BMP581 | 100 Hz | 1 |
@@ -240,7 +257,7 @@ replaces it). Battery voltage and current are on the BOM but not modelled.
 Sensors are sampled at 100 Hz. The policy receives one frame every 40 ms
 (`history_hz = 25`) for the last second, plus three route preview points (20, 40
 and 80 m ahead along the route, relative to the vehicle and divided by their
-distance) and the previous action/filter velocity: 664 inputs with the defaults.
+distance) and the previous action/filter velocity: 539 inputs with the defaults.
 Routes are ~1 km, stored as 101 points 10 m apart (`route_points`,
 `route_spacing_m`); projection and preview interpolate linearly between them.
 Checkpoints saved before these fields existed load with their original 513
@@ -259,8 +276,10 @@ Optional latency uses a sample buffer; optional dropout holds the last
 successful fix and increases its age. GPS latency is rounded to the sensor
 period. Noise is applied before normalization and before GPS sample/hold.
 
-Actions are `[thrust, left_brake, right_brake]` in `[-1, 1]`. They map to
-`[0, thrust_max]` N and `[0, 3]` rad. `thrust_max` is 1.0 N, the hardware thrust
+Actions are `[thrust, brake, diff]` in `[-1, 1]`. Thrust maps to `[0, thrust_max]` N.
+`brake` maps to `b` in `[0, 1]` and `diff` is used as is (positive = right brake).
+They mix into `left = clip(b - diff, 0, 1)` and `right = clip(b + diff, 0, 1)`,
+each scaled to `[0, 3]` rad of line travel. `thrust_max` is 1.0 N, the hardware thrust
 clamp, and equals the XML actuator range. Under power the propeller reaction
 torque turns the vehicle; holding a line is left to the policy. The brake command
 follows the same critically damped filter as the viewer, reaching about 99% of a
@@ -271,12 +290,19 @@ actuator logic.
 
 ## Paths, reward and curriculum
 
-Routes are spatial curves with no arrival times. Projection searches near the
-previous path segment, avoiding jumps between branches at a figure-eight crossing.
-The policy gets points 5, 10, 20, 40 and 60 m ahead of its estimated progress.
-These are relative to measured GPS position and rotated into a horizontal frame
-aligned with measured yaw. Each is divided by its lookahead distance. Ground truth
-is used for rewards and termination, not for these guidance observations.
+Routes are spatial curves with no arrival times: 101 points, 10 m apart. The
+vehicle works through them in order. The target is the first point not yet passed.
+It is passed when the true position crosses the plane through the point,
+perpendicular to the route there (the tangent from the previous to the next
+point), however far off the vehicle is, so a miss never stalls the route. The
+miss distance is the closest approach to the point during that step. The policy gets the points 2, 4 and 8
+indices past the target (`preview_index`, so 20, 40 and 80 m at 10 m spacing),
+clamped to the last point. They are relative to measured position (GPS x/y and
+barometer) and rotated into a horizontal frame aligned with measured yaw. Each is
+divided by its look-ahead distance. Ground truth is used for passing points,
+rewards and termination, not for these guidance observations. There is no
+projection or search window. Cross-track and altitude error, for metrics and
+failure, are measured against the segment into the target.
 
 Random routes integrate smoothly changing horizontal curvature and vertical grade.
 At full difficulty, curvature is bounded by 0.04/m (25 m minimum radius) and grade
@@ -288,16 +314,25 @@ circles, an S-turn, figure eight, climb and descent. Climb/descent approach 8%/1
 grade then flatten, so the descent route stays above the ground from the default
 launch altitude. `--path random` evaluates seeded random routes separately.
 
-Per-step reward is forward path progress divided by nominal forward distance per
-control step, multiplied by an exponential tracking-error factor. It also subtracts
-quadratic horizontal/vertical errors and command changes. Progress is signed, so
-flying backward does not earn progress reward. Failure gives −10 and reaching the
-route endpoint gives +10. Following the route matters continuously; the policy is
-not paid for waiting at a waypoint.
+Each pass earns a **graded reward** on the 3D miss distance d:
+`exp(-(max(d - success_radius_m, 0) / pass_sigma_m)²)`. That is 1 within 2 m,
+0.78 at 3 m, 0.37 at 4 m and 0.02 at 6 m with the defaults (both 2 m). The
+reward also has a small penalty on command changes, -10 on failure, and +10 for
+passing the last point's plane (however accurately), plus **progress shaping**:
+`progress_reward_per_m` (0.1) times the drop in distance-to-go each step.
+Distance-to-go is the true 3D distance to the target point plus the route length
+remaining after it. It is nearly continuous when a point is passed accurately;
+on a wide miss it drops when the target advances, so shaping alone does not
+punish misses (the graded pass reward does). It is a plain difference with no
+terminal term: over a flight it sums to 0.1 × metres gained, so ending the
+episode early earns nothing extra. A full 1 km route is worth about 100 from
+shaping, next to up to 100 from passes (points 1 to 100). Set it to 0 to train on
+the pass rewards alone.
 
-Failures include ground crossing, excessive tracking error, canopy below the pod,
+Failures include ground crossing, excessive tracking error (35 m horizontal or 25 m vertical from the target segment), canopy below the pod,
 nonfinite dynamics, or remaining outside the calibrated angle-of-attack interval
-for over one second. A 60-second time limit truncates the episode. PPO bootstraps
+for over one second (any spanwise strip, its incidence averaged over the chord
+by area). "Canopy below the pod" uses the skin's mass centre. A 300-second time limit truncates the episode. PPO bootstraps
 value at time limits, but stops advantage propagation across all episode resets.
 The aerodynamic coefficient clamp remains the accepted model's clamp; it is not a
 physical stall model.
@@ -312,11 +347,11 @@ comparison for saved policies.
 
 ## Code map
 
-- `mjx/paramotor_mjx.py`: JAX aerodynamics and MuJoCo forward/integration pipeline.
+- `mjx/paramotor_mjx.py`: JAX aerodynamics and the MJX (Warp) physics step.
 - `model/paramotor_control.py`: shared thrust/spin and brake smoothing.
 - `rl/routes.py`: route generation, local projection and lookahead sampling.
 - `rl/rl_env.py`: reset/step, sensors, history, rewards and termination.
-- `rl/train.py`: feedforward PPO, curriculum, logging and checkpoints.
+- `rl/train.py`: PPO for the control policy (MLP, no recurrent state), curriculum, logging and checkpoints.
 - `rl/evaluate.py`: fixed-route evaluation, CSV export and optional replay.
 - `tests/test_rl.py`: dynamics parity and learning-environment regression tests.
 
