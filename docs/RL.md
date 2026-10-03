@@ -50,6 +50,8 @@ docker/train.sh --analyze first                          # re-plot, also mid-tra
 docker/train.sh --name baseline --seeds 5 --updates 500  # runs/baseline/seed0..4
 docker/train.sh --name high_lr --seeds 5 --updates 500 --config configs/high_lr.json
 docker/train.sh --compare baseline high_lr               # rliable statistics + plots
+docker/train.sh --test                                   # test suite, live output
+docker/train.sh --headed                                 # viewer window from the container
 ```
 
 Options it does not recognise are passed to `python -m rl.train`. The steps it
@@ -80,8 +82,21 @@ docker build -f docker/Dockerfile -t paramotor-rl:cpu --build-arg JAX_CUDA=cpu .
 docker run --rm -v "$PWD:/workspace" paramotor-rl:cpu python -m tests.test_aero
 ```
 
-The container is headless, so `rl.evaluate --view` and `viewer/view.sh` must run on the
-host; copy the checkpoint out of `runs/` and view it there.
+On a Linux desktop (X11 or XWayland) the container can also open windows.
+`--headed` shares the host's X socket and this session's X auth cookie (no
+`xhost +` needed) and lets the NVIDIA runtime inject its OpenGL driver, so the
+viewer renders on the GPU:
+
+```bash
+docker/train.sh --headed                          # live MuJoCo viewer
+docker/train.sh --headed --sweep --zoom 12        # any viewer/view.sh options
+docker/train.sh --headed python -m rl.evaluate runs/first/checkpoint.pkl \
+    --path left --episodes 1 --view               # replay a policy flight
+```
+
+A `--view` replay writes its one flight to `<run>/replay/`, never over
+`<run>/eval/`. On macOS, run `viewer/view.sh` on the host instead (the viewer
+needs `mjpython` there, and Docker Desktop has no display).
 
 ## Run
 
@@ -101,15 +116,29 @@ python -m rl.train --num-envs 64 --updates 1000 --output runs/first
 # Continue for another 1000 updates, keeping weights, optimizer and curriculum.
 python -m rl.train --resume runs/first/checkpoint.pkl --updates 1000 --output runs/first
 
-# Repeatable evaluation: seven routes, three seeds each.
-python -m rl.evaluate runs/first/checkpoint.pkl --output runs/eval-first
+# Repeatable evaluation: seven routes, 20 seeds each -> runs/first/eval/.
+python -m rl.evaluate runs/first/checkpoint.pkl
+
+# Many seeds' checkpoints at once, 100 flights per route each (one batch,
+# about the time of a single checkpoint). A progress bar shows simulated time,
+# flights still airborne and failures.
+python -m rl.evaluate runs/base/seed*/checkpoint.pkl --episodes 100
 
 # Watch one recorded evaluation flight, with its reference path overlaid.
 python -m rl.evaluate runs/first/checkpoint.pkl --path left --episodes 1 --view
 ```
 
 The test command disables unrelated globally installed pytest plugins (for example,
-ROS launch-testing plugins).
+ROS launch-testing plugins). Without a local environment, run the suite in the
+image with live output: `docker/train.sh --test` (pytest arguments may follow,
+e.g. `docker/train.sh --test tests/test_rl.py -k gps`).
+
+Evaluation cost is set by the number of sequential physics steps (60 s of
+flight), not by the number of flights, so more flights per route are nearly
+free and give tighter statistics. Every flight's summary goes to `summary.csv`;
+only the first `--trace` (default 3) episodes per route are recorded step by
+step in `flights.csv`, which keeps thousands of flights cheap. Evaluation stops
+early once every flight has ended.
 
 The first rollout compiles and can take substantially longer than later updates.
 The smoke run also exercises episode resets and the curriculum gate. It only checks execution; it does not produce a useful trained pilot.

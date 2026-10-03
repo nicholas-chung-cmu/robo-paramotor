@@ -21,6 +21,8 @@ Run everything from the repo root. Python modules are run with `python -m`:
 python -m model.build_paramotor          # regenerate model/paramotor.xml + scene.xml
 viewer/view.sh                           # open the interactive viewer
 python -m pytest                         # all tests
+docker/train.sh --test                   # all tests, inside the Docker image
+docker/train.sh --headed                 # MuJoCo viewer window, from the Docker image
 python -m rl.train --smoke --output runs/smoke
 docker/train.sh --name first --updates 2000   # train + evaluate + plots in Docker -> runs/first/
 docker/train.sh --name base --seeds 5         # 5 seeds -> runs/base/seed0..4

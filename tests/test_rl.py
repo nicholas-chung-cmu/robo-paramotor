@@ -258,6 +258,28 @@ def test_sensor_csv_is_complete_and_sourced(env):
     assert defaults.bias_std == sensor_spec.defaults("bias_std")
     # The CSV's GNSS rate is the env's GNSS rate.
     assert float(rows["gps_pos_xy"]["rate_hz"]) == defaults.gps_hz
+    assert float(rows["baro_alt"]["rate_hz"]) == defaults.baro_hz
+
+
+def test_barometer_holds_between_samples(env, initial):
+    # 100 Hz sensor ticks, 20 Hz barometer: a new altitude only every 5th sample.
+    ratio = env.baro_stride // env.sensor_stride
+    assert ratio == env.cfg.sensor_hz // env.cfg.baro_hz
+    z = env.slices["pod_pos"].start + 2
+    s, seen = initial, []
+    for i in range(1, 2 * ratio + 1):
+        s = s.replace(data=s.data.replace(sensordata=s.data.sensordata.at[z].set(100.0 + i)))
+        s = env._sample(s, i * env.sensor_stride)
+        seen.append(float(s.sensors[env.baro]))
+    fresh = [i for i in range(1, 2 * ratio + 1) if (i * env.sensor_stride) % env.baro_stride == 0]
+    assert fresh == [ratio, 2 * ratio]
+    for i, value in enumerate(seen, start=1):
+        latest = max([f for f in fresh if f <= i], default=None)
+        if latest is None:
+            assert value == float(initial.sensors[env.baro])  # still the reset reading
+        else:
+            assert abs(value - (100.0 + latest)) < 10.0  # that sample's truth + noise/bias
+            assert value == seen[latest - 1]  # held, bit for bit
 
 
 def test_observation_excludes_unmeasurable_channels(env, initial):

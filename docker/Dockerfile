@@ -21,7 +21,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     # Disable unrelated pytest plugins, as docs/RL.md does on the host.
     PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
     # Let JAX grow GPU memory instead of grabbing 75% up front.
-    XLA_PYTHON_CLIENT_PREALLOCATE=false
+    XLA_PYTHON_CLIENT_PREALLOCATE=false \
+    # Headed mode (train.sh --headed): let the NVIDIA runtime inject its OpenGL
+    # libraries as well as CUDA, so the MuJoCo viewer renders on the GPU.
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+
+# OpenGL dispatch (glvnd) and the X11 libraries GLFW opens, for the viewer.
+# Mesa is the software fallback when no NVIDIA driver is injected (--cpu).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 libegl1 libglx-mesa0 libgl1-mesa-dri \
+        libx11-6 libxext6 libxrandr2 libxinerama1 libxcursor1 libxi6 libxxf86vm1 \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
 

@@ -47,6 +47,7 @@ class EnvConfig:
     control_hz: int = 25
     sensor_hz: int = 100
     gps_hz: int = 5
+    baro_hz: int = 20  # BMP581 output rate; held between samples like GPS
     history_hz: int = 25  # observation history is downsampled from sensor_hz
     history_seconds: float = 1.0
     episode_seconds: float = 60.0
@@ -110,13 +111,13 @@ class ParamotorEnv:
         self.physics = ParamotorMJX(c.solver_iterations, c.solver_ls_iterations)
         self.m = self.physics.native
         dt = float(self.m.opt.timestep)
-        for hz in (c.control_hz, c.sensor_hz, c.gps_hz):
+        for hz in (c.control_hz, c.sensor_hz, c.gps_hz, c.baro_hz):
             if hz <= 0 or not np.isclose(1 / (hz * dt), round(1 / (hz * dt))):
                 raise ValueError(
                     "Sensor/control periods must be integer multiples of physics dt"
                 )
-        if c.sensor_hz % c.control_hz or c.sensor_hz % c.gps_hz:
-            raise ValueError("sensor_hz must be divisible by control_hz and gps_hz")
+        if c.sensor_hz % c.control_hz or c.sensor_hz % c.gps_hz or c.sensor_hz % c.baro_hz:
+            raise ValueError("sensor_hz must be divisible by control_hz, gps_hz and baro_hz")
         if c.history_hz <= 0 or c.sensor_hz % c.history_hz:
             raise ValueError("sensor_hz must be divisible by history_hz")
         if c.path_kind not in routes.KINDS or c.history_seconds <= 0:
@@ -129,6 +130,7 @@ class ParamotorEnv:
         self.substeps = round(self.control_dt / dt)
         self.sensor_stride = round(1 / c.sensor_hz / dt)
         self.gps_stride = round(1 / c.gps_hz / dt)
+        self.baro_stride = round(1 / c.baro_hz / dt)
         self.history_ratio = c.sensor_hz // c.history_hz
         self.history_count = round(c.history_seconds * c.history_hz)
         if self.history_count < 1 or c.episode_seconds * c.control_hz < 1:
@@ -187,6 +189,10 @@ class ParamotorEnv:
             jp.zeros(self.n_meas).at[self.slices["pod_quat"].start].set(1.0),
             jp.zeros(3), jp.zeros(()), jp.array(True)).size)
         self.obs_size = self.history_count * self.frame_size + len(c.preview_m) * 3 + 5
+        # The launch state depends only on the config, never on the reset key:
+        # build it once here instead of re-running the forward pass every reset.
+        self.launch = jax.jit(lambda: self.physics.initial(
+            c.launch_speed, c.altitude, c.initial_thrust))()
 
     def _sensor_vector(self, mapping):
         unknown = set(mapping) - set(self.channels)
@@ -240,9 +246,7 @@ class ParamotorEnv:
     def reset(self, key, difficulty=0.0):
         key, pk, nk, bk = jax.random.split(key, 4)
         points, arc = routes.make_path(pk, difficulty, self.cfg.path_kind)
-        data = self.physics.initial(
-            self.cfg.launch_speed, self.cfg.altitude, self.cfg.initial_thrust
-        )
+        data = self.launch
         origin = data.site_xpos[self.m.site("pod_com").id]
         points = points + origin
         # Preserve rigging geometry: shift both free bodies together.
@@ -315,6 +319,10 @@ class ParamotorEnv:
         )
         values = values.at[self.gps_indices].set(
             jp.where(fix, buffer[0], state.sensors[self.gps_indices])
+        )
+        # The barometer reports at baro_hz; between reports the last value holds.
+        values = values.at[self.baro].set(
+            jp.where(tick % self.baro_stride == 0, values[self.baro], state.sensors[self.baro])
         )
         age = jp.where(
             fix,

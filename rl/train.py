@@ -94,9 +94,17 @@ def make_rollout(env, network, cfg):
     batched_reset = jax.vmap(env.reset, in_axes=(0, None))
 
     def rollout(params, states, key, difficulty):
+        # One fresh start per environment for the whole rollout, built once,
+        # rather than rebuilding all num_envs starts on every step where any
+        # episode ends. An environment that ends twice within one rollout
+        # (rare: episodes last far longer than rollout_steps) restarts from
+        # the same route and launch noise both times.
+        key, rk = jax.random.split(key)
+        fresh = batched_reset(jax.random.split(rk, cfg.num_envs), difficulty)
+
         def one(carry, _):
             states, key = carry
-            key, ak, rk = jax.random.split(key, 3)
+            key, ak = jax.random.split(key)
             mean, std, value = network.apply(params, states.obs)
             latent = mean + jp.exp(std) * jax.random.normal(ak, mean.shape)
             logp = log_probability(latent, mean, std)
@@ -118,13 +126,12 @@ def make_rollout(env, network, cfg):
             done = term | trunc
 
             def reset_finished(states):
-                resets = batched_reset(jax.random.split(rk, cfg.num_envs), difficulty)
                 return jax.tree.map(
                     lambda x, y: jp.where(
                         done.reshape((len(done),) + (1,) * (x.ndim - 1)), y, x
                     ),
                     states,
-                    resets,
+                    fresh,
                 )
 
             next_states = jax.lax.cond(
