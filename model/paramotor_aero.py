@@ -29,7 +29,10 @@ body and the canopy is a DEFORMABLE SKIN: a MuJoCo flex shell over a grid of
 point-mass vertices (build_paramotor.py). The skin bends, twists and cambers
 under load; nothing about its shape is fixed.
 
-Each grid cell (four neighbouring vertices) is one aerodynamic strip element.
+Each grid cell (four neighbouring vertices) from the leading edge aft is one
+aerodynamic strip element. Stations ahead of the leading-edge station (the sail
+wrapped under the nose) carry no aerodynamic force: they face backwards, where
+a strip element's angle of attack means nothing.
 Its frame comes from the CURRENT vertex positions: x along the local chord
 (trailing edge to leading edge), z along the local surface normal. Its velocity
 is the mean of its corners' velocities. Its force is split equally over its
@@ -330,12 +333,14 @@ class CanopyMesh:
 
     def __init__(self, model):
         import mujoco
+        # Grid from the vertex SITES: where the skin closes (wingtips), one
+        # body carries the sites of two grid points.
         found = {}
-        for b in range(model.nbody):
-            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) or ""
+        for site in range(model.nsite):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_SITE, site) or ""
             if name.startswith("cv_"):
                 _, row, station = name.split("_")
-                found[int(row), int(station)] = b
+                found[int(row), int(station)] = model.site_bodyid[site]
         if not found:
             raise ValueError("model has no deformable canopy (cv_* vertex bodies)")
         S = 1 + max(k[0] for k in found)
@@ -353,14 +358,26 @@ class CanopyMesh:
                 qpos[s, c, k] = model.jnt_qposadr[j]
         self.dof, self.qpos = dof, qpos
         self.rest = model.body_pos[self.bodies].copy()      # world, at qpos = 0
+        # Each body's mass counts once; repeated grid points carry none.
         self.mass = model.body_mass[self.bodies].copy()
+        first = {}
+        for idx in np.ndindex(S, C):
+            if first.setdefault(self.bodies[idx], idx) != idx:
+                self.mass[idx] = 0.0
         self.shape = (S, C)
+        # First lifting chord station: the leading edge (0 without a nose wrap).
+        k = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_NUMERIC, "canopy_le_station")
+        self.le = int(model.numeric_data[model.numeric_adr[k]]) if k >= 0 else 0
 
     def positions(self, qpos):
         return self.rest + qpos[self.qpos]
 
     def velocities(self, qvel):
         return qvel[self.dof]
+
+    def lifting(self, X):
+        """The leading-edge-aft part of a (S, C, ...) grid."""
+        return X[:, self.le:]
 
 
 def set_linear_velocity(model, data, v_world):
@@ -397,7 +414,7 @@ class ParamotorAero:
         ch, sh = math.cos(self.p["chi"]), math.sin(self.p["chi"])
         self.T_BP = np.array([[ch, 0.0, sh], [0.0, 1.0, 0.0], [-sh, 0.0, ch]])
 
-        R, area, _ = cell_frames(self.mesh.rest)
+        R, area, _ = cell_frames(self.mesh.lifting(self.mesh.rest))
         self.cell_area = area
         self.arch_recovery = self._arch_recovery(R, area)
         self.p.setdefault("strip_cl_scale", self.arch_recovery)
@@ -456,7 +473,7 @@ class ParamotorAero:
         """(com, mean velocity, angular velocity, frame) of the skin."""
         P = self.mesh.positions(data.qpos)
         V = self.mesh.velocities(data.qvel)
-        R, area, _ = cell_frames(P)
+        R, area, _ = cell_frames(self.mesh.lifting(P))
         return canopy_state(P, V, self.mesh.mass, R, area)[:4]
 
     # -- the callback --------------------------------------------------------
@@ -471,12 +488,12 @@ class ParamotorAero:
         mesh = self.mesh
         P = mesh.positions(data.qpos)
         V = mesh.velocities(data.qvel)
-        f_cells, alpha, alpha_raw, R, area = strip_cells(P, V, self.p)
+        f_cells, alpha, alpha_raw, R, area = strip_cells(mesh.lifting(P), mesh.lifting(V), self.p)
         com, vbar, omega, R_c, inertia, r = canopy_state(P, V, mesh.mass, R, area)
         w_body = T_FLIP @ (R_c.T @ omega)              # canopy frame, FRD
 
         if self.mode == "strip":
-            F = spread_to_corners(f_cells)
+            F = np.pad(spread_to_corners(f_cells), ((0, 0), (mesh.le, 0), (0, 0)))
             V_P = float(np.linalg.norm(vbar))
             roll_native = True
             self.last["f_cells"] = f_cells
@@ -497,8 +514,9 @@ class ParamotorAero:
         M_P = pure_moments_frd(V_P, w_body, a_mean, phi, self.p, roll_native)
         M_w = R_c @ (T_FLIP @ M_P)
         F = F + couple_forces(M_w, inertia, r, mesh.mass)
-        self.wrench[mesh.bodies, :3] = F
-        data.qfrc_passive[mesh.dof] += F
+        # Add, not assign: a merged tip vertex appears twice in the grid.
+        np.add.at(self.wrench, (mesh.bodies, slice(0, 3)), F)
+        np.add.at(data.qfrc_passive, mesh.dof, F)
 
         # ---- fuselage ------------------------------------------------------
         vel = np.zeros(6)

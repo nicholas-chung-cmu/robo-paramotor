@@ -66,9 +66,12 @@ class ParamotorMJX:
         self.vertex_dof = jp.array(mesh.dof)
         self.rest = jp.array(mesh.rest)
         self.vertex_mass = jp.array(mesh.mass)
-        R, area, _ = aero.cell_frames(mesh.rest)
+        self.le = mesh.le  # first lifting chord station
+        R, area, _ = aero.cell_frames(mesh.lifting(mesh.rest))
         self.p["strip_cl_scale"] = aero.ParamotorAero._arch_recovery(R, area)
-        self.template = mjx.make_data(m, impl="warp")
+        # Warp sizes its constraint buffer from this argument, not the XML's
+        # <size njmax>; the canopy's edge constraints alone exceed its default.
+        self.template = mjx.make_data(m, impl="warp", njmax=int(m.njmax))
 
     # -- state ---------------------------------------------------------------
     def vertices(self, d):
@@ -87,7 +90,7 @@ class ParamotorMJX:
         flapping cell does not count as the whole strip leaving the envelope.
         """
         P, V = self.vertices(d)
-        _, _, raw, _, area = aero.strip_cells(P, V, self.p, jp)
+        _, _, raw, _, area = aero.strip_cells(P[:, self.le:], V[:, self.le:], self.p, jp)
         return (raw * area).sum(axis=1) / area.sum(axis=1)
 
     def translate(self, qpos, offset):
@@ -100,8 +103,8 @@ class ParamotorMJX:
         """World force/torque per body: skin cells on the vertices, pod drag."""
         p = self.p
         P, V = self.vertices(d)
-        f_cells, alpha, _, R, area = aero.strip_cells(P, V, p, jp)
-        F = aero.spread_to_corners(f_cells, jp)
+        f_cells, alpha, _, R, area = aero.strip_cells(P[:, self.le:], V[:, self.le:], p, jp)
+        F = jp.pad(aero.spread_to_corners(f_cells, jp), ((0, 0), (self.le, 0), (0, 0)))
         com, vbar, omega, R_c, inertia, r = aero.canopy_state(
             P, V, self.vertex_mass, R, area, jp)
 
@@ -120,7 +123,8 @@ class ParamotorMJX:
         moments = jp.where(speed > 1e-6, moments, 0.0)
         F = F + aero.couple_forces(aero.to_world(R_c, moments * FLIP, jp),
                                    inertia, r, self.vertex_mass, jp)
-        wrench = jp.zeros((self.native.nbody, 6)).at[self.vertex_bodies, :3].set(F)
+        # add, not set: a merged tip vertex appears twice in the grid
+        wrench = jp.zeros((self.native.nbody, 6)).at[self.vertex_bodies, :3].add(F)
 
         # Fuselage drag at the pod mass centre.
         a, v = self.pod_qpos, self.pod_dof

@@ -107,7 +107,6 @@ PHI_HALF = _solve_half_angle(PROJ_FRACTION)   # ~1.1311 rad
 THETA = 2 * PHI_HALF                          # total arc angle
 R_ARC = SPAN_FLAT / THETA                     # ~0.4421 m radius of curvature
 
-TE_X = -CHORD / 2                             # trailing edge, where the brakes pull
 
 # ----------------------------------------------------------------------------
 # POD / HARDWARE GEOMETRY  -- box half-sizes (m)
@@ -139,12 +138,87 @@ SERVO_Z = 0.052
 PEEK_E, PEEK_T, PEEK_NU = 3.6e9, 125e-6, 0.4
 PLATE_D = PEEK_E * PEEK_T**3 / (12 * (1 - PEEK_NU**2))
 FLEX_SOLREF = "0.004 1"       # edge-length constraint: stiff, critically damped
-# Chordwise vertex stations, canopy frame, leading edge first. They include the
-# A and B line rows, so attachments land on vertices. The C (anti-flap) row
-# attaches at the trailing-edge vertex.
-CHORD_STATIONS = (CHORD / 2, 0.060, 0.0, -0.060, TE_X)
-TE_INDEX = len(CHORD_STATIONS) - 1
-ROW_INDEX = {"A": 1, "B": 3, "C": TE_INDEX}
+# SAIL PROFILE. The skin is a closed airfoil section: a NACA 4-digit section's
+# surface, laid off along the arch's outward normal, running from the trailing
+# edge forward along the underside, round the leading edge, then aft over the
+# top and back to the trailing edge, where it closes on itself. It is still ONE
+# skin with nothing inside it: no ribs and no internal pressure.
+#
+# TIPS. Toward each tip the section thins elliptically, over the outer
+# TIP_ROUND of the half-span, to TIP_MIN of its thickness, so the wing rounds
+# off. Each end is closed by a flat END PLATE across the tip section: a
+# separate flex with edge-length constraints and NO bending. The thickness
+# deliberately stops short of zero. Folding the upper surface onto the lower
+# makes a 180-degree crease in the bending skin, where MuJoCo's flex bending
+# (not stress-free on curved rest shapes) put ~0.7 N on 24 mg tip vertices and
+# the simulation went to NaN.
+SAIL_CAMBER = 0.04            # max camber, fraction of chord (NACA 4415)
+SAIL_CAMBER_POS = 0.4         # its position, fraction of chord from the LE
+SAIL_THICKNESS = 0.15         # section thickness, fraction of chord
+TIP_ROUND = 0.4               # outer fraction of each half-span that rounds off
+TIP_MIN = 0.35                # thickness at the tips, fraction of the inboard section
+A_FRAC = 0.5 - 0.060 / CHORD  # A line row, fraction of chord from the LE (0.194)
+B_FRAC = 0.5 + 0.060 / CHORD  # B line row (0.806)
+# Chordwise vertex stations as (surface, fraction of chord from the LE), round
+# the section; the skin closes from the last station (the trailing edge) back
+# to the first. The A and B line rows are stations on the UNDERSIDE, as on a
+# real wing, so attachments land on vertices; the C (anti-flap) row attaches
+# at the trailing-edge vertex, where the two surfaces meet.
+SAIL_STATIONS = (("l", B_FRAC), ("l", 0.5), ("l", A_FRAC), ("l", 0.08), ("l", 0.025),
+                 ("u", 0.0), ("u", 0.025), ("u", 0.08),
+                 ("u", A_FRAC), ("u", 0.5), ("u", B_FRAC), ("u", 1.0))
+# Lift and drag act on the upper surface, leading edge aft: one lifting surface
+# for the wing as a whole. The lower surface faces backwards in the station
+# order, where a strip element's angle of attack means nothing, so it is
+# structure and mass only. The model records the leading-edge station for
+# paramotor_aero.CanopyMesh (custom numeric canopy_le_station).
+LE_INDEX = 5
+TE_INDEX = len(SAIL_STATIONS) - 1
+ROW_INDEX = {"A": 2, "B": 0, "C": TE_INDEX}
+
+
+def tip_thickness(s: int) -> float:
+    """Thickness factor of span row s: 1 inboard, elliptical to TIP_MIN at the tips."""
+    eta = abs(span_phis()[s]) / (THETA / 2)
+    if eta <= 1 - TIP_ROUND:
+        return 1.0
+    e = (eta - 1 + TIP_ROUND) / TIP_ROUND
+    return TIP_MIN + (1 - TIP_MIN) * math.sqrt(max(0.0, 1 - e * e))
+
+
+def end_plate_elements():
+    """Triangles across the tip sections (grid indices), both tips. Upper and
+    lower stations at the same chord fraction are joined, so the plate is a
+    ladder of quads from a nose triangle to a trailing-edge triangle."""
+    u = {f: k for k, (side, f) in enumerate(SAIL_STATIONS) if side == "u"}
+    l = {f: k for k, (side, f) in enumerate(SAIL_STATIONS) if side == "l"}
+    fs = sorted(l)                                 # lower fractions, nose to tail
+    tri = [(u[0.0], u[fs[0]], l[fs[0]])]           # nose
+    for f0, f1 in zip(fs, fs[1:]):
+        tri += [(u[f0], u[f1], l[f1]), (u[f0], l[f1], l[f0])]
+    tri.append((u[fs[-1]], u[1.0], l[fs[-1]]))     # trailing edge
+    out = []
+    for s in (0, N_SPAN - 1):
+        out += [s * N_CHORDWISE + c for t in tri for c in t]
+    return out
+
+
+def section_point(side: str, f: float, thick: float = 1.0):
+    """(x, h) of a NACA 4-digit surface point at chord fraction f, unscaled (m):
+    x forward of mid-chord, h above the chord line. side is "u" or "l"; thick
+    scales the thickness (the camber line stays)."""
+    m, q, t = SAIL_CAMBER, SAIL_CAMBER_POS, SAIL_THICKNESS * thick
+    if f < q:
+        yc, slope = m / q**2 * (2 * q * f - f * f), 2 * m / q**2 * (q - f)
+    else:
+        yc = m / (1 - q)**2 * (1 - 2 * q + 2 * q * f - f * f)
+        slope = 2 * m / (1 - q)**2 * (q - f)
+    yt = 5 * t * (0.2969 * math.sqrt(f) - 0.1260 * f - 0.3516 * f**2
+                  + 0.2843 * f**3 - 0.1036 * f**4)
+    th, sg = math.atan(slope), (1.0 if side == "u" else -1.0)
+    xs = f - sg * yt * math.sin(th)
+    return (0.5 - xs) * CHORD, (yc + sg * yt * math.cos(th)) * CHORD
+
 
 # Scenery. Purely visual: contype/conaffinity are 0, so there is no ground
 # contact and the dynamics are identical with or without it.
@@ -168,7 +242,7 @@ PROP_X = MOTOR_X - 0.018
 # so ~6.5-7 m of line height under a wing of ~10-11 m flat span: about 0.63 of
 # the flat span. Scaled to this 1 m wing that is 0.63 m.
 LINE_HEIGHT_FRAC = 0.63
-Z_CANOPY = LINE_HEIGHT_FRAC * SPAN_FLAT       # canopy mid-surface above pod origin
+Z_CANOPY = LINE_HEIGHT_FRAC * SPAN_FLAT       # canopy chord line above pod origin
 V_DESIGN = 6.0                                # m/s, spec illustrative airspeed 5.74-6.33
 # Brake actuation is a SERVO ARM (horn), not a capstan. The tendon is anchored
 # at the arm tip; swinging the arm moves that anchor and pays the line in or out
@@ -241,7 +315,7 @@ POD_HP = {
     "cl": (-0.058,  0.040, 0.070),    # C row, anti-flap
     "cr": (-0.058, -0.040, 0.070),
 }
-# A (front) and B (rear) rows are CHORD_STATIONS[1] and [3]. The C row is an
+# A (front) and B (rear) rows are SAIL_STATIONS[5] and [7]. The C row is an
 # anti-flap line at the trailing edge, on the INBOARD stations.
 # Spanwise stations that carry suspension lines, given as span fractions so they
 # stay put when N_PANEL changes. 0.5 is the centre; these bracket it symmetrically.
@@ -263,7 +337,9 @@ C_PANELS = [i for i in LINE_PANELS
 
 
 def station_rows(i):
-    return ("C",) if i in C_PANELS else ("A",)
+    """Line rows at strip i: every station has an A line at the front; the
+    inboard ones also have a C line to the trailing edge."""
+    return ("A", "C") if i in C_PANELS else ("A",)
 
 
 def panel_phi(i: int) -> float:
@@ -285,13 +361,55 @@ def span_phis():
 
 
 N_SPAN = N_PANEL + 2
-N_CHORDWISE = len(CHORD_STATIONS)
+N_CHORDWISE = len(SAIL_STATIONS)
 
 
 def vertex_pos(s: int, c: int):
     """World position of skin vertex (spanwise row s, chord station c) at qpos0."""
-    _, y, z = arc_pos(span_phis()[s])
-    return CHORD_STATIONS[c], y, Z_CANOPY + z
+    return _vertex_pos(s, c, SECTION_SCALE)
+
+
+def _vertex_pos(s: int, c: int, k: float):
+    """Vertex position with the section (chord stations and sail profile)
+    scaled by k. The sail profile is laid off along the arch's outward normal."""
+    phi = span_phis()[s]
+    _, y, z = arc_pos(phi)
+    x, h = section_point(*SAIL_STATIONS[c], tip_thickness(s))
+    x, h = k * x, k * h
+    return x, y + h * math.sin(phi), Z_CANOPY + z + h * math.cos(phi)
+
+
+def _skin_area(k: float) -> float:
+    """Sum of the lifting cells' areas (leading edge aft), as
+    paramotor_aero.cell_frames measures them."""
+    P = [[_vertex_pos(s, c, k) for c in range(N_CHORDWISE)] for s in range(N_SPAN)]
+    sub = lambda u, v: [u[i] - v[i] for i in range(3)]
+    total = 0.0
+    for s in range(N_SPAN - 1):
+        for c in range(LE_INDEX, N_CHORDWISE - 1):
+            a, b, cc, d = P[s][c], P[s + 1][c], P[s][c + 1], P[s + 1][c + 1]
+            p, q = sub(d, a), sub(b, cc)
+            x = (p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0])
+            total += 0.5 * math.sqrt(sum(v * v for v in x))
+    return total
+
+
+def _solve_section_scale() -> float:
+    """Scale that makes the lifting sail's surface area the flat area S_FLAT.
+
+    Flat area is measured along the surface, as for a real wing. The sail's
+    curve and its offset from the arch both add area, so the section is
+    scaled down (chord and profile together, keeping the airfoil's shape).
+    The nose wrap is extra fabric on top of it.
+    """
+    lo, hi = 0.5, 1.0
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if _skin_area(mid) < S_FLAT else (lo, mid)
+    return 0.5 * (lo + hi)
+
+
+SECTION_SCALE = _solve_section_scale()
 
 
 def vname(s: int, c: int) -> str:
@@ -316,7 +434,10 @@ def _tributary(u):
 def vertex_masses():
     """Skin mass per vertex (kg), by tributary area; sums to the canopy total."""
     ws = _tributary([R_ARC * phi for phi in span_phis()])
-    wc = _tributary([-x for x in CHORD_STATIONS])
+    pts = [section_point(*st) for st in SAIL_STATIONS]
+    n = len(pts)                            # closed loop: TE joins station 0
+    wc = [(math.dist(pts[k - 1], pts[k]) + math.dist(pts[k], pts[(k + 1) % n])) / 2
+          for k in range(n)]
     total = N_PANEL * M["panel"] * G
     norm = sum(ws) * sum(wc)
     return [[total * ws[s] * wc[c] / norm for c in range(N_CHORDWISE)]
@@ -324,12 +445,15 @@ def vertex_masses():
 
 
 def skin_elements():
-    """Two triangles per grid cell, wound so the normal points up (+z)."""
+    """Two triangles per grid cell, consistently wound. The last chord column
+    closes the section, from the trailing edge back to station 0."""
     tri = []
     for s in range(N_SPAN - 1):
-        for c in range(N_CHORDWISE - 1):
+        for c in range(N_CHORDWISE):
+            c1 = (c + 1) % N_CHORDWISE
             a, b = s * N_CHORDWISE + c, (s + 1) * N_CHORDWISE + c
-            tri += [a, a + 1, b, b, a + 1, b + 1]
+            a1, b1 = s * N_CHORDWISE + c1, (s + 1) * N_CHORDWISE + c1
+            tri += [a, a1, b, b, a1, b1]
     return tri
 
 
@@ -383,7 +507,11 @@ def build(tendon_ranges: dict | None = None, servo_mode: str = "position",
     A('  <option timestep="0.0005" integrator="Euler" density="0" viscosity="0">')
     A('    <flag multiccd="disable"/>')
     A('  </option>')
-    A('  <size njmax="500" nconmax="200"/>')
+    A('  <!-- njmax: the closed skin alone has ~600 edge constraints; MuJoCo Warp drops rows beyond it. -->')
+    A('  <size njmax="1000" nconmax="200"/>')
+    A('  <custom>')
+    A(f'    <numeric name="canopy_le_station" data="{LE_INDEX}"/>')
+    A('  </custom>')
     A('')
     A('  <default>')
     A('    <geom contype="0" conaffinity="0" friction="0.6 0.005 0.0001"/>')
@@ -507,7 +635,7 @@ def build(tendon_ranges: dict | None = None, servo_mode: str = "position",
 
     # ---------------- CANOPY ----------------
     A('    <!-- ============================ CANOPY ============================= -->')
-    A(f'    <!-- Deformable single skin: {N_SPAN} x {N_CHORDWISE} point-mass vertices (spanwise rows at both tips and every strip centre; chord stations LE, A row, mid, B row, TE), each free to translate on three world-axis slides. The flex shell below spans them. Vertex masses are the 68 g skin split by tributary area. -->')
+    A(f'    <!-- Deformable single skin: {N_SPAN} x {N_CHORDWISE} point-mass vertices (spanwise rows at both tips and every strip centre; chord stations round a closed airfoil section: trailing edge forward along the underside, round the leading edge, aft over the top), each free to translate on three world-axis slides. The flex shell below spans them. Vertex masses are the 68 g skin split by tributary area. -->')
     masses = vertex_masses()
     for s_ in range(N_SPAN):
         for c in range(N_CHORDWISE):
@@ -531,10 +659,21 @@ def build(tendon_ranges: dict | None = None, servo_mode: str = "position",
     A('      <contact contype="0" conaffinity="0" selfcollide="none"/>')
     A(f'      <elasticity young="{PEEK_E:.3e}" poisson="{PEEK_NU}" thickness="{PEEK_T:.3e}" elastic2d="bend"/>')
     A('    </flex>')
+    A('    <!-- End plates closing both wing tips: edge-length constraints only, no bending (see build_paramotor.py, TIPS). -->')
+    plate = end_plate_elements()
+    used = sorted(set(plate))
+    local = {g: k for k, g in enumerate(used)}
+    A('    <flex name="canopy_tips" dim="2" radius="0.0005" rgba="0.80 0.62 0.22 0.7"')
+    A(f'          body="{" ".join(vname(divmod(g, N_CHORDWISE)[0], divmod(g, N_CHORDWISE)[1]) for g in used)}"')
+    A(f'          vertex="{" ".join(["0 0 0"] * len(used))}"')
+    A(f'          element="{" ".join(str(local[g]) for g in plate)}">')
+    A('      <contact contype="0" conaffinity="0" selfcollide="none"/>')
+    A('    </flex>')
     A('  </deformable>')
     A('')
     A('  <equality>')
     A(f'    <flex flex="canopy" solref="{FLEX_SOLREF}"/>')
+    A(f'    <flex flex="canopy_tips" solref="{FLEX_SOLREF}"/>')
     A('  </equality>')
     A('')
 
@@ -701,6 +840,8 @@ def main():
     print(f"geometry:  arc half-angle {PHI_HALF:.4f} rad, R = {R_ARC:.4f} m, "
           f"arc {THETA:.4f} rad")
     print(f"           flat area {S_FLAT:.3f} m^2, projected {S_FLAT*PROJ_FRACTION:.3f} m^2")
+    print(f"sail:      NACA upper surface, section scaled {SECTION_SCALE:.4f} so the surface "
+          f"area is {_skin_area(SECTION_SCALE):.5f} m^2; projected chord {SECTION_SCALE*CHORD*1e3:.1f} mm")
     print(f"BOM total: {BOM_TOTAL_G:.1f} g  (spec itemised sum = 325.4 g)")
 
     try:

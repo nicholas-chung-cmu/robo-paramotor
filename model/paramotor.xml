@@ -6,7 +6,11 @@
   <option timestep="0.0005" integrator="Euler" density="0" viscosity="0">
     <flag multiccd="disable"/>
   </option>
-  <size njmax="500" nconmax="200"/>
+  <!-- njmax: the closed skin alone has ~600 edge constraints; MuJoCo Warp drops rows beyond it. -->
+  <size njmax="1000" nconmax="200"/>
+  <custom>
+    <numeric name="canopy_le_station" data="5"/>
+  </custom>
 
   <default>
     <geom contype="0" conaffinity="0" friction="0.6 0.005 0.0001"/>
@@ -97,7 +101,7 @@
 
       <!-- Servo arm on the output face, swinging about y: the shaft axis follows the case when the servo is laid flat. The brake line is anchored at the arm tip. -->
       <body name="arm_L" pos="-0.0200 0.0590 0.0520"
-            euler="0 -1.808190 0">
+            euler="0 -1.788643 0">
         <joint name="arm_L" type="hinge" axis="0 1 0" damping="0.0015"
                armature="5.00e-05" frictionloss="0.0008"
                range="0.0 3.0"/>
@@ -115,7 +119,7 @@
 
       <!-- Servo arm on the output face, swinging about y: the shaft axis follows the case when the servo is laid flat. The brake line is anchored at the arm tip. -->
       <body name="arm_R" pos="-0.0200 -0.0590 0.0520"
-            euler="0 -1.808190 0">
+            euler="0 -1.788643 0">
         <joint name="arm_R" type="hinge" axis="0 1 0" damping="0.0015"
                armature="5.00e-05" frictionloss="0.0008"
                range="0.0 3.0"/>
@@ -129,627 +133,1435 @@
     </body>  <!-- /pod -->
 
     <!-- ============================ CANOPY ============================= -->
-    <!-- Deformable single skin: 16 x 5 point-mass vertices (spanwise rows at both tips and every strip centre; chord stations LE, A row, mid, B row, TE), each free to translate on three world-axis slides. The flex shell below spans them. Vertex masses are the 68 g skin split by tributary area. -->
-    <body name="cv_00_0" pos="0.098039 -0.398500 0.374534">
+    <!-- Deformable single skin: 16 x 12 point-mass vertices (spanwise rows at both tips and every strip centre; chord stations round a closed airfoil section: trailing edge forward along the underside, round the leading edge, aft over the top), each free to translate on three world-axis slides. The flex shell below spans them. Vertex masses are the 68 g skin split by tributary area. -->
+    <body name="cv_00_0" pos="-0.055755 -0.400290 0.375357">
       <joint name="cv_00_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_00_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_00_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00011779" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00014805" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_00_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_00_1" pos="0.060000 -0.398500 0.374534">
+    <body name="cv_00_1" pos="0.000094 -0.401119 0.375738">
       <joint name="cv_00_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_00_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_00_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00030357" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00017769" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_00_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_00_2" pos="0.000000 -0.398500 0.374534">
+    <body name="cv_00_2" pos="0.055467 -0.399261 0.374884">
       <joint name="cv_00_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_00_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_00_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00037157" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00012099" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_00_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_00_3" pos="-0.060000 -0.398500 0.374534">
+    <body name="cv_00_3" pos="0.076229 -0.397801 0.374213">
       <joint name="cv_00_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_00_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_00_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00030357" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00005054" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_00_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_00_4" pos="-0.098039 -0.398500 0.374534">
+    <body name="cv_00_4" pos="0.086441 -0.397437 0.374046">
       <joint name="cv_00_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_00_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_00_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00011779" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00002946" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_00_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_01_0" pos="0.098039 -0.382286 0.406345">
+    <body name="cv_00_5" pos="0.091396 -0.398500 0.374534">
+      <joint name="cv_00_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_00_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_00_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00002443" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_00_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_00_6" pos="0.087212 -0.401172 0.375762">
+      <joint name="cv_00_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_00_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_00_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00003017" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_00_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_00_7" pos="0.077317 -0.403983 0.377053">
+      <joint name="cv_00_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_00_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_00_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00005322" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_00_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_00_8" pos="0.056402 -0.407503 0.378671">
+      <joint name="cv_00_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_00_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_00_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012811" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_00_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_00_9" pos="-0.000094 -0.408800 0.379266">
+      <joint name="cv_00_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_00_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_00_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00018470" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_00_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_00_10" pos="-0.056114 -0.403914 0.377022">
+      <joint name="cv_00_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_00_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_00_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00015037" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_00_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_00_11" pos="-0.091396 -0.398500 0.374534">
+      <joint name="cv_00_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_00_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_00_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00011656" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_00_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_01_0" pos="-0.055564 -0.382163 0.406276">
       <joint name="cv_01_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_01_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_01_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00035336" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00044415" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_01_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_01_1" pos="0.060000 -0.382286 0.406345">
+    <body name="cv_01_1" pos="0.000193 -0.380897 0.405564">
       <joint name="cv_01_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_01_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_01_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00091071" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00053306" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_01_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_01_2" pos="0.000000 -0.382286 0.406345">
+    <body name="cv_01_2" pos="0.054973 -0.378828 0.404401">
       <joint name="cv_01_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_01_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_01_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00111471" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00036296" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_01_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_01_3" pos="-0.060000 -0.382286 0.406345">
+    <body name="cv_01_3" pos="0.075652 -0.378475 0.404203">
       <joint name="cv_01_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_01_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_01_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00091071" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00015163" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_01_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_01_4" pos="-0.098039 -0.382286 0.406345">
+    <body name="cv_01_4" pos="0.086033 -0.379369 0.404705">
       <joint name="cv_01_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_01_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_01_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00035336" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00008838" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_01_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_02_0" pos="0.098039 -0.342381 0.465492">
+    <body name="cv_01_5" pos="0.091396 -0.382286 0.406345">
+      <joint name="cv_01_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_01_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_01_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00007329" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_01_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_01_6" pos="0.087620 -0.386747 0.408853">
+      <joint name="cv_01_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_01_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_01_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009050" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_01_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_01_7" pos="0.077893 -0.390686 0.411067">
+      <joint name="cv_01_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_01_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_01_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00015967" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_01_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_01_8" pos="0.056896 -0.395111 0.413554">
+      <joint name="cv_01_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_01_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_01_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00038433" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_01_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_01_9" pos="-0.000193 -0.396069 0.414093">
+      <joint name="cv_01_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_01_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_01_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00055410" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_01_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_01_10" pos="-0.056305 -0.389320 0.410299">
+      <joint name="cv_01_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_01_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_01_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00045112" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_01_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_01_11" pos="-0.091396 -0.382286 0.406345">
+      <joint name="cv_01_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_01_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_01_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00034969" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_01_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_02_0" pos="-0.055459 -0.341359 0.464674">
       <joint name="cv_02_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_02_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_02_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00059220" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_02_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_02_1" pos="0.060000 -0.342381 0.465492">
+    <body name="cv_02_1" pos="0.000248 -0.339204 0.462949">
       <joint name="cv_02_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_02_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_02_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00071075" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_02_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_02_2" pos="0.000000 -0.342381 0.465492">
+    <body name="cv_02_2" pos="0.054699 -0.337210 0.461353">
       <joint name="cv_02_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_02_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_02_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00148629" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00048394" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_02_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_02_3" pos="-0.060000 -0.342381 0.465492">
+    <body name="cv_02_3" pos="0.075333 -0.337413 0.461515">
       <joint name="cv_02_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_02_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_02_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00020217" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_02_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_02_4" pos="-0.098039 -0.342381 0.465492">
+    <body name="cv_02_4" pos="0.085807 -0.338828 0.462648">
       <joint name="cv_02_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_02_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_02_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00011784" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_02_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_03_0" pos="0.098039 -0.293413 0.517385">
+    <body name="cv_02_5" pos="0.091396 -0.342381 0.465492">
+      <joint name="cv_02_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_02_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_02_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009771" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_02_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_02_6" pos="0.087846 -0.347316 0.469442">
+      <joint name="cv_02_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_02_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_02_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012067" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_02_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_02_7" pos="0.078212 -0.351459 0.472758">
+      <joint name="cv_02_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_02_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_02_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00021289" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_02_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_02_8" pos="0.057170 -0.355941 0.476345">
+      <joint name="cv_02_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_02_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_02_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00051243" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_02_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_02_9" pos="-0.000248 -0.356658 0.476919">
+      <joint name="cv_02_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_02_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_02_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00073880" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_02_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_02_10" pos="-0.056410 -0.349592 0.471264">
+      <joint name="cv_02_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_02_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_02_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00060149" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_02_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_02_11" pos="-0.091396 -0.342381 0.465492">
+      <joint name="cv_02_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_02_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_02_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00046625" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_02_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_03_0" pos="-0.055422 -0.292268 0.516113">
       <joint name="cv_03_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_03_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_03_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00059220" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_03_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_03_1" pos="0.060000 -0.293413 0.517385">
+    <body name="cv_03_1" pos="0.000267 -0.290120 0.513727">
       <joint name="cv_03_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_03_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_03_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00071075" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_03_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_03_2" pos="0.000000 -0.293413 0.517385">
+    <body name="cv_03_2" pos="0.054605 -0.288369 0.511783">
       <joint name="cv_03_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_03_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_03_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00148629" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00048394" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_03_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_03_3" pos="-0.060000 -0.293413 0.517385">
+    <body name="cv_03_3" pos="0.075224 -0.288696 0.512146">
       <joint name="cv_03_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_03_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_03_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00020217" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_03_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_03_4" pos="-0.098039 -0.293413 0.517385">
+    <body name="cv_03_4" pos="0.085729 -0.290091 0.513695">
       <joint name="cv_03_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_03_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_03_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00011784" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_03_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_04_0" pos="0.098039 -0.236677 0.560650">
+    <body name="cv_03_5" pos="0.091396 -0.293413 0.517385">
+      <joint name="cv_03_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_03_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_03_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009771" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_03_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_03_6" pos="0.087923 -0.297919 0.522391">
+      <joint name="cv_03_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_03_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_03_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012067" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_03_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_03_7" pos="0.078322 -0.301651 0.526536">
+      <joint name="cv_03_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_03_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_03_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00021289" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_03_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_03_8" pos="0.057264 -0.305645 0.530972">
+      <joint name="cv_03_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_03_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_03_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00051243" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_03_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_03_9" pos="-0.000267 -0.306218 0.531609">
+      <joint name="cv_03_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_03_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_03_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00073880" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_03_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_03_10" pos="-0.056446 -0.299862 0.524549">
+      <joint name="cv_03_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_03_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_03_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00060149" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_03_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_03_11" pos="-0.091396 -0.293413 0.517385">
+      <joint name="cv_03_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_03_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_03_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00046625" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_03_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_04_0" pos="-0.055421 -0.235742 0.559192">
       <joint name="cv_04_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_04_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_04_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00059220" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_04_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_04_1" pos="0.060000 -0.236677 0.560650">
+    <body name="cv_04_1" pos="0.000268 -0.233997 0.556469">
       <joint name="cv_04_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_04_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_04_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00071075" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_04_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_04_2" pos="0.000000 -0.236677 0.560650">
+    <body name="cv_04_2" pos="0.054600 -0.232583 0.554264">
       <joint name="cv_04_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_04_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_04_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00148629" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00048394" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_04_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_04_3" pos="-0.060000 -0.236677 0.560650">
+    <body name="cv_04_3" pos="0.075218 -0.232853 0.554685">
       <joint name="cv_04_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_04_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_04_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00020217" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_04_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_04_4" pos="-0.098039 -0.236677 0.560650">
+    <body name="cv_04_4" pos="0.085725 -0.233986 0.556452">
       <joint name="cv_04_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_04_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_04_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00011784" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_04_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_05_0" pos="0.098039 -0.173677 0.594143">
+    <body name="cv_04_5" pos="0.091396 -0.236677 0.560650">
+      <joint name="cv_04_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_04_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_04_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009771" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_04_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_04_6" pos="0.087927 -0.240324 0.566339">
+      <joint name="cv_04_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_04_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_04_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012067" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_04_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_04_7" pos="0.078328 -0.243343 0.571047">
+      <joint name="cv_04_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_04_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_04_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00021289" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_04_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_04_8" pos="0.057269 -0.246571 0.576082">
+      <joint name="cv_04_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_04_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_04_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00051243" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_04_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_04_9" pos="-0.000268 -0.247031 0.576800">
+      <joint name="cv_04_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_04_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_04_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00073880" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_04_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_04_10" pos="-0.056448 -0.241891 0.568783">
+      <joint name="cv_04_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_04_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_04_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00060149" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_04_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_04_11" pos="-0.091396 -0.236677 0.560650">
+      <joint name="cv_04_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_04_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_04_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00046625" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_04_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_05_0" pos="-0.055421 -0.172991 0.592552">
       <joint name="cv_05_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_05_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_05_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00059220" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_05_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_05_1" pos="0.060000 -0.173677 0.594143">
+    <body name="cv_05_1" pos="0.000268 -0.171710 0.589582">
       <joint name="cv_05_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_05_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_05_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00071075" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_05_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_05_2" pos="0.000000 -0.173677 0.594143">
+    <body name="cv_05_2" pos="0.054600 -0.170673 0.587177">
       <joint name="cv_05_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_05_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_05_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00148629" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00048394" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_05_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_05_3" pos="-0.060000 -0.173677 0.594143">
+    <body name="cv_05_3" pos="0.075218 -0.170871 0.587637">
       <joint name="cv_05_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_05_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_05_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00020217" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_05_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_05_4" pos="-0.098039 -0.173677 0.594143">
+    <body name="cv_05_4" pos="0.085725 -0.171703 0.589564">
       <joint name="cv_05_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_05_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_05_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00011784" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_05_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_06_0" pos="0.098039 -0.106080 0.616977">
+    <body name="cv_05_5" pos="0.091396 -0.173677 0.594143">
+      <joint name="cv_05_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_05_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_05_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009771" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_05_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_05_6" pos="0.087927 -0.176354 0.600348">
+      <joint name="cv_05_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_05_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_05_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012067" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_05_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_05_7" pos="0.078328 -0.178569 0.605483">
+      <joint name="cv_05_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_05_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_05_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00021289" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_05_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_05_8" pos="0.057269 -0.180937 0.610975">
+      <joint name="cv_05_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_05_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_05_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00051243" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_05_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_05_9" pos="-0.000268 -0.181275 0.611758">
+      <joint name="cv_05_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_05_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_05_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00073880" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_05_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_05_10" pos="-0.056448 -0.177503 0.603014">
+      <joint name="cv_05_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_05_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_05_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00060149" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_05_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_05_11" pos="-0.091396 -0.173677 0.594143">
+      <joint name="cv_05_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_05_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_05_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00046625" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_05_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_06_0" pos="-0.055421 -0.105661 0.615295">
       <joint name="cv_06_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_06_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_06_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00059220" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_06_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_06_1" pos="0.060000 -0.106080 0.616977">
+    <body name="cv_06_1" pos="0.000268 -0.104879 0.612157">
       <joint name="cv_06_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_06_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_06_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00071075" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_06_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_06_2" pos="0.000000 -0.106080 0.616977">
+    <body name="cv_06_2" pos="0.054600 -0.104245 0.609616">
       <joint name="cv_06_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_06_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_06_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00148629" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00048394" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_06_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_06_3" pos="-0.060000 -0.106080 0.616977">
+    <body name="cv_06_3" pos="0.075218 -0.104366 0.610101">
       <joint name="cv_06_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_06_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_06_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00020217" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_06_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_06_4" pos="-0.098039 -0.106080 0.616977">
+    <body name="cv_06_4" pos="0.085725 -0.104874 0.612138">
       <joint name="cv_06_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_06_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_06_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00011784" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_06_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_07_0" pos="0.098039 -0.035675 0.628547">
+    <body name="cv_06_5" pos="0.091396 -0.106080 0.616977">
+      <joint name="cv_06_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_06_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_06_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009771" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_06_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_06_6" pos="0.087927 -0.107715 0.623533">
+      <joint name="cv_06_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_06_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_06_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012067" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_06_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_06_7" pos="0.078328 -0.109068 0.628960">
+      <joint name="cv_06_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_06_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_06_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00021289" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_06_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_06_8" pos="0.057269 -0.110514 0.634763">
+      <joint name="cv_06_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_06_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_06_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00051243" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_06_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_06_9" pos="-0.000268 -0.110721 0.635591">
+      <joint name="cv_06_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_06_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_06_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00073880" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_06_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_06_10" pos="-0.056448 -0.108417 0.626350">
+      <joint name="cv_06_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_06_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_06_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00060149" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_06_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_06_11" pos="-0.091396 -0.106080 0.616977">
+      <joint name="cv_06_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_06_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_06_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00046625" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_06_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_07_0" pos="-0.055421 -0.035534 0.626820">
       <joint name="cv_07_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_07_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_07_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00059220" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_07_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_07_1" pos="0.060000 -0.035675 0.628547">
+    <body name="cv_07_1" pos="0.000268 -0.035271 0.623596">
       <joint name="cv_07_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_07_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_07_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00071075" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_07_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_07_2" pos="0.000000 -0.035675 0.628547">
+    <body name="cv_07_2" pos="0.054600 -0.035058 0.620986">
       <joint name="cv_07_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_07_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_07_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00148629" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00048394" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_07_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_07_3" pos="-0.060000 -0.035675 0.628547">
+    <body name="cv_07_3" pos="0.075218 -0.035098 0.621484">
       <joint name="cv_07_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_07_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_07_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00020217" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_07_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_07_4" pos="-0.098039 -0.035675 0.628547">
+    <body name="cv_07_4" pos="0.085725 -0.035269 0.623576">
       <joint name="cv_07_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_07_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_07_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00011784" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_07_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_08_0" pos="0.098039 0.035675 0.628547">
+    <body name="cv_07_5" pos="0.091396 -0.035675 0.628547">
+      <joint name="cv_07_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_07_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_07_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009771" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_07_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_07_6" pos="0.087927 -0.036225 0.635282">
+      <joint name="cv_07_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_07_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_07_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012067" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_07_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_07_7" pos="0.078328 -0.036679 0.640856">
+      <joint name="cv_07_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_07_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_07_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00021289" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_07_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_07_8" pos="0.057269 -0.037166 0.646817">
+      <joint name="cv_07_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_07_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_07_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00051243" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_07_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_07_9" pos="-0.000268 -0.037235 0.647667">
+      <joint name="cv_07_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_07_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_07_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00073880" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_07_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_07_10" pos="-0.056448 -0.036461 0.638175">
+      <joint name="cv_07_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_07_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_07_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00060149" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_07_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_07_11" pos="-0.091396 -0.035675 0.628547">
+      <joint name="cv_07_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_07_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_07_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00046625" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_07_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_08_0" pos="-0.055421 0.035534 0.626820">
       <joint name="cv_08_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_08_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_08_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00059220" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_08_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_08_1" pos="0.060000 0.035675 0.628547">
+    <body name="cv_08_1" pos="0.000268 0.035271 0.623596">
       <joint name="cv_08_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_08_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_08_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00071075" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_08_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_08_2" pos="0.000000 0.035675 0.628547">
+    <body name="cv_08_2" pos="0.054600 0.035058 0.620986">
       <joint name="cv_08_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_08_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_08_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00148629" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00048394" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_08_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_08_3" pos="-0.060000 0.035675 0.628547">
+    <body name="cv_08_3" pos="0.075218 0.035098 0.621484">
       <joint name="cv_08_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_08_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_08_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00020217" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_08_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_08_4" pos="-0.098039 0.035675 0.628547">
+    <body name="cv_08_4" pos="0.085725 0.035269 0.623576">
       <joint name="cv_08_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_08_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_08_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00011784" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_08_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_09_0" pos="0.098039 0.106080 0.616977">
+    <body name="cv_08_5" pos="0.091396 0.035675 0.628547">
+      <joint name="cv_08_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_08_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_08_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009771" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_08_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_08_6" pos="0.087927 0.036225 0.635282">
+      <joint name="cv_08_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_08_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_08_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012067" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_08_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_08_7" pos="0.078328 0.036679 0.640856">
+      <joint name="cv_08_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_08_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_08_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00021289" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_08_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_08_8" pos="0.057269 0.037166 0.646817">
+      <joint name="cv_08_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_08_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_08_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00051243" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_08_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_08_9" pos="-0.000268 0.037235 0.647667">
+      <joint name="cv_08_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_08_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_08_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00073880" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_08_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_08_10" pos="-0.056448 0.036461 0.638175">
+      <joint name="cv_08_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_08_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_08_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00060149" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_08_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_08_11" pos="-0.091396 0.035675 0.628547">
+      <joint name="cv_08_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_08_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_08_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00046625" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_08_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_09_0" pos="-0.055421 0.105661 0.615295">
       <joint name="cv_09_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_09_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_09_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00059220" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_09_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_09_1" pos="0.060000 0.106080 0.616977">
+    <body name="cv_09_1" pos="0.000268 0.104879 0.612157">
       <joint name="cv_09_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_09_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_09_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00071075" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_09_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_09_2" pos="0.000000 0.106080 0.616977">
+    <body name="cv_09_2" pos="0.054600 0.104245 0.609616">
       <joint name="cv_09_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_09_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_09_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00148629" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00048394" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_09_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_09_3" pos="-0.060000 0.106080 0.616977">
+    <body name="cv_09_3" pos="0.075218 0.104366 0.610101">
       <joint name="cv_09_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_09_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_09_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00020217" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_09_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_09_4" pos="-0.098039 0.106080 0.616977">
+    <body name="cv_09_4" pos="0.085725 0.104874 0.612138">
       <joint name="cv_09_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_09_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_09_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00011784" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_09_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_10_0" pos="0.098039 0.173677 0.594143">
+    <body name="cv_09_5" pos="0.091396 0.106080 0.616977">
+      <joint name="cv_09_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_09_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_09_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009771" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_09_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_09_6" pos="0.087927 0.107715 0.623533">
+      <joint name="cv_09_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_09_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_09_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012067" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_09_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_09_7" pos="0.078328 0.109068 0.628960">
+      <joint name="cv_09_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_09_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_09_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00021289" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_09_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_09_8" pos="0.057269 0.110514 0.634763">
+      <joint name="cv_09_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_09_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_09_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00051243" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_09_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_09_9" pos="-0.000268 0.110721 0.635591">
+      <joint name="cv_09_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_09_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_09_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00073880" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_09_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_09_10" pos="-0.056448 0.108417 0.626350">
+      <joint name="cv_09_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_09_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_09_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00060149" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_09_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_09_11" pos="-0.091396 0.106080 0.616977">
+      <joint name="cv_09_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_09_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_09_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00046625" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_09_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_10_0" pos="-0.055421 0.172991 0.592552">
       <joint name="cv_10_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_10_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_10_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00059220" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_10_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_10_1" pos="0.060000 0.173677 0.594143">
+    <body name="cv_10_1" pos="0.000268 0.171710 0.589582">
       <joint name="cv_10_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_10_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_10_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00071075" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_10_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_10_2" pos="0.000000 0.173677 0.594143">
+    <body name="cv_10_2" pos="0.054600 0.170673 0.587177">
       <joint name="cv_10_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_10_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_10_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00148629" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00048394" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_10_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_10_3" pos="-0.060000 0.173677 0.594143">
+    <body name="cv_10_3" pos="0.075218 0.170871 0.587637">
       <joint name="cv_10_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_10_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_10_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00020217" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_10_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_10_4" pos="-0.098039 0.173677 0.594143">
+    <body name="cv_10_4" pos="0.085725 0.171703 0.589564">
       <joint name="cv_10_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_10_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_10_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00011784" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_10_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_11_0" pos="0.098039 0.236677 0.560650">
+    <body name="cv_10_5" pos="0.091396 0.173677 0.594143">
+      <joint name="cv_10_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_10_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_10_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009771" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_10_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_10_6" pos="0.087927 0.176354 0.600348">
+      <joint name="cv_10_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_10_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_10_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012067" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_10_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_10_7" pos="0.078328 0.178569 0.605483">
+      <joint name="cv_10_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_10_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_10_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00021289" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_10_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_10_8" pos="0.057269 0.180937 0.610975">
+      <joint name="cv_10_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_10_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_10_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00051243" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_10_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_10_9" pos="-0.000268 0.181275 0.611758">
+      <joint name="cv_10_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_10_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_10_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00073880" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_10_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_10_10" pos="-0.056448 0.177503 0.603014">
+      <joint name="cv_10_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_10_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_10_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00060149" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_10_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_10_11" pos="-0.091396 0.173677 0.594143">
+      <joint name="cv_10_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_10_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_10_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00046625" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_10_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_11_0" pos="-0.055421 0.235742 0.559192">
       <joint name="cv_11_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_11_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_11_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00059220" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_11_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_11_1" pos="0.060000 0.236677 0.560650">
+    <body name="cv_11_1" pos="0.000268 0.233997 0.556469">
       <joint name="cv_11_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_11_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_11_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00071075" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_11_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_11_2" pos="0.000000 0.236677 0.560650">
+    <body name="cv_11_2" pos="0.054600 0.232583 0.554264">
       <joint name="cv_11_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_11_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_11_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00148629" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00048394" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_11_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_11_3" pos="-0.060000 0.236677 0.560650">
+    <body name="cv_11_3" pos="0.075218 0.232853 0.554685">
       <joint name="cv_11_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_11_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_11_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00020217" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_11_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_11_4" pos="-0.098039 0.236677 0.560650">
+    <body name="cv_11_4" pos="0.085725 0.233986 0.556452">
       <joint name="cv_11_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_11_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_11_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00011784" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_11_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_12_0" pos="0.098039 0.293413 0.517385">
+    <body name="cv_11_5" pos="0.091396 0.236677 0.560650">
+      <joint name="cv_11_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_11_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_11_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009771" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_11_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_11_6" pos="0.087927 0.240324 0.566339">
+      <joint name="cv_11_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_11_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_11_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012067" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_11_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_11_7" pos="0.078328 0.243343 0.571047">
+      <joint name="cv_11_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_11_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_11_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00021289" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_11_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_11_8" pos="0.057269 0.246571 0.576082">
+      <joint name="cv_11_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_11_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_11_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00051243" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_11_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_11_9" pos="-0.000268 0.247031 0.576800">
+      <joint name="cv_11_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_11_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_11_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00073880" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_11_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_11_10" pos="-0.056448 0.241891 0.568783">
+      <joint name="cv_11_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_11_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_11_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00060149" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_11_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_11_11" pos="-0.091396 0.236677 0.560650">
+      <joint name="cv_11_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_11_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_11_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00046625" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_11_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_12_0" pos="-0.055422 0.292268 0.516113">
       <joint name="cv_12_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_12_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_12_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00059220" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_12_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_12_1" pos="0.060000 0.293413 0.517385">
+    <body name="cv_12_1" pos="0.000267 0.290120 0.513727">
       <joint name="cv_12_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_12_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_12_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00071075" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_12_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_12_2" pos="0.000000 0.293413 0.517385">
+    <body name="cv_12_2" pos="0.054605 0.288369 0.511783">
       <joint name="cv_12_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_12_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_12_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00148629" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00048394" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_12_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_12_3" pos="-0.060000 0.293413 0.517385">
+    <body name="cv_12_3" pos="0.075224 0.288696 0.512146">
       <joint name="cv_12_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_12_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_12_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00020217" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_12_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_12_4" pos="-0.098039 0.293413 0.517385">
+    <body name="cv_12_4" pos="0.085729 0.290091 0.513695">
       <joint name="cv_12_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_12_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_12_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00011784" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_12_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_13_0" pos="0.098039 0.342381 0.465492">
+    <body name="cv_12_5" pos="0.091396 0.293413 0.517385">
+      <joint name="cv_12_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_12_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_12_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009771" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_12_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_12_6" pos="0.087923 0.297919 0.522391">
+      <joint name="cv_12_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_12_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_12_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012067" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_12_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_12_7" pos="0.078322 0.301651 0.526536">
+      <joint name="cv_12_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_12_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_12_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00021289" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_12_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_12_8" pos="0.057264 0.305645 0.530972">
+      <joint name="cv_12_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_12_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_12_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00051243" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_12_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_12_9" pos="-0.000267 0.306218 0.531609">
+      <joint name="cv_12_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_12_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_12_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00073880" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_12_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_12_10" pos="-0.056446 0.299862 0.524549">
+      <joint name="cv_12_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_12_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_12_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00060149" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_12_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_12_11" pos="-0.091396 0.293413 0.517385">
+      <joint name="cv_12_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_12_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_12_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00046625" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_12_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_13_0" pos="-0.055459 0.341359 0.464674">
       <joint name="cv_13_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_13_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_13_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00059220" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_13_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_13_1" pos="0.060000 0.342381 0.465492">
+    <body name="cv_13_1" pos="0.000248 0.339204 0.462949">
       <joint name="cv_13_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_13_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_13_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00071075" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_13_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_13_2" pos="0.000000 0.342381 0.465492">
+    <body name="cv_13_2" pos="0.054699 0.337210 0.461353">
       <joint name="cv_13_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_13_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_13_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00148629" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00048394" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_13_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_13_3" pos="-0.060000 0.342381 0.465492">
+    <body name="cv_13_3" pos="0.075333 0.337413 0.461515">
       <joint name="cv_13_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_13_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_13_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00121429" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00020217" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_13_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_13_4" pos="-0.098039 0.342381 0.465492">
+    <body name="cv_13_4" pos="0.085807 0.338828 0.462648">
       <joint name="cv_13_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_13_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_13_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00047114" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00011784" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_13_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_14_0" pos="0.098039 0.382286 0.406345">
+    <body name="cv_13_5" pos="0.091396 0.342381 0.465492">
+      <joint name="cv_13_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_13_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_13_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009771" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_13_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_13_6" pos="0.087846 0.347316 0.469442">
+      <joint name="cv_13_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_13_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_13_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012067" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_13_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_13_7" pos="0.078212 0.351459 0.472758">
+      <joint name="cv_13_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_13_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_13_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00021289" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_13_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_13_8" pos="0.057170 0.355941 0.476345">
+      <joint name="cv_13_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_13_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_13_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00051243" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_13_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_13_9" pos="-0.000248 0.356658 0.476919">
+      <joint name="cv_13_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_13_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_13_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00073880" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_13_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_13_10" pos="-0.056410 0.349592 0.471264">
+      <joint name="cv_13_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_13_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_13_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00060149" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_13_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_13_11" pos="-0.091396 0.342381 0.465492">
+      <joint name="cv_13_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_13_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_13_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00046625" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_13_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_14_0" pos="-0.055564 0.382163 0.406276">
       <joint name="cv_14_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_14_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_14_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00035336" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00044415" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_14_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_14_1" pos="0.060000 0.382286 0.406345">
+    <body name="cv_14_1" pos="0.000193 0.380897 0.405564">
       <joint name="cv_14_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_14_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_14_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00091071" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00053306" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_14_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_14_2" pos="0.000000 0.382286 0.406345">
+    <body name="cv_14_2" pos="0.054973 0.378828 0.404401">
       <joint name="cv_14_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_14_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_14_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00111471" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00036296" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_14_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_14_3" pos="-0.060000 0.382286 0.406345">
+    <body name="cv_14_3" pos="0.075652 0.378475 0.404203">
       <joint name="cv_14_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_14_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_14_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00091071" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00015163" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_14_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_14_4" pos="-0.098039 0.382286 0.406345">
+    <body name="cv_14_4" pos="0.086033 0.379369 0.404705">
       <joint name="cv_14_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_14_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_14_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00035336" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00008838" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_14_4" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_15_0" pos="0.098039 0.398500 0.374534">
+    <body name="cv_14_5" pos="0.091396 0.382286 0.406345">
+      <joint name="cv_14_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_14_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_14_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00007329" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_14_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_14_6" pos="0.087620 0.386747 0.408853">
+      <joint name="cv_14_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_14_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_14_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00009050" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_14_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_14_7" pos="0.077893 0.390686 0.411067">
+      <joint name="cv_14_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_14_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_14_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00015967" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_14_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_14_8" pos="0.056896 0.395111 0.413554">
+      <joint name="cv_14_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_14_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_14_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00038433" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_14_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_14_9" pos="-0.000193 0.396069 0.414093">
+      <joint name="cv_14_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_14_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_14_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00055410" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_14_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_14_10" pos="-0.056305 0.389320 0.410299">
+      <joint name="cv_14_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_14_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_14_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00045112" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_14_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_14_11" pos="-0.091396 0.382286 0.406345">
+      <joint name="cv_14_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_14_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_14_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00034969" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_14_11" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_15_0" pos="-0.055755 0.400290 0.375357">
       <joint name="cv_15_0_x" type="slide" axis="1 0 0"/>
       <joint name="cv_15_0_y" type="slide" axis="0 1 0"/>
       <joint name="cv_15_0_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00011779" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00014805" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_15_0" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_15_1" pos="0.060000 0.398500 0.374534">
+    <body name="cv_15_1" pos="0.000094 0.401119 0.375738">
       <joint name="cv_15_1_x" type="slide" axis="1 0 0"/>
       <joint name="cv_15_1_y" type="slide" axis="0 1 0"/>
       <joint name="cv_15_1_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00030357" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00017769" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_15_1" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_15_2" pos="0.000000 0.398500 0.374534">
+    <body name="cv_15_2" pos="0.055467 0.399261 0.374884">
       <joint name="cv_15_2_x" type="slide" axis="1 0 0"/>
       <joint name="cv_15_2_y" type="slide" axis="0 1 0"/>
       <joint name="cv_15_2_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00037157" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00012099" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_15_2" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_15_3" pos="-0.060000 0.398500 0.374534">
+    <body name="cv_15_3" pos="0.076229 0.397801 0.374213">
       <joint name="cv_15_3_x" type="slide" axis="1 0 0"/>
       <joint name="cv_15_3_y" type="slide" axis="0 1 0"/>
       <joint name="cv_15_3_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00030357" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00005054" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_15_3" size="0.002" rgba="1 1 0 0.6"/>
     </body>
-    <body name="cv_15_4" pos="-0.098039 0.398500 0.374534">
+    <body name="cv_15_4" pos="0.086441 0.397437 0.374046">
       <joint name="cv_15_4_x" type="slide" axis="1 0 0"/>
       <joint name="cv_15_4_y" type="slide" axis="0 1 0"/>
       <joint name="cv_15_4_z" type="slide" axis="0 0 1"/>
-      <inertial pos="0 0 0" mass="0.00011779" diaginertia="1e-10 1e-10 1e-10"/>
+      <inertial pos="0 0 0" mass="0.00002946" diaginertia="1e-10 1e-10 1e-10"/>
       <site name="cv_15_4" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_15_5" pos="0.091396 0.398500 0.374534">
+      <joint name="cv_15_5_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_15_5_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_15_5_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00002443" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_15_5" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_15_6" pos="0.087212 0.401172 0.375762">
+      <joint name="cv_15_6_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_15_6_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_15_6_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00003017" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_15_6" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_15_7" pos="0.077317 0.403983 0.377053">
+      <joint name="cv_15_7_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_15_7_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_15_7_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00005322" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_15_7" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_15_8" pos="0.056402 0.407503 0.378671">
+      <joint name="cv_15_8_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_15_8_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_15_8_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00012811" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_15_8" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_15_9" pos="-0.000094 0.408800 0.379266">
+      <joint name="cv_15_9_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_15_9_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_15_9_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00018470" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_15_9" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_15_10" pos="-0.056114 0.403914 0.377022">
+      <joint name="cv_15_10_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_15_10_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_15_10_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00015037" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_15_10" size="0.002" rgba="1 1 0 0.6"/>
+    </body>
+    <body name="cv_15_11" pos="-0.091396 0.398500 0.374534">
+      <joint name="cv_15_11_x" type="slide" axis="1 0 0"/>
+      <joint name="cv_15_11_y" type="slide" axis="0 1 0"/>
+      <joint name="cv_15_11_z" type="slide" axis="0 0 1"/>
+      <inertial pos="0 0 0" mass="0.00011656" diaginertia="1e-10 1e-10 1e-10"/>
+      <site name="cv_15_11" size="0.002" rgba="1 1 0 0.6"/>
     </body>
   </worldbody>
 
   <deformable>
     <!-- PEEK skin: bending from plate stiffness D = E t^3/12(1-nu^2) = 6.98e-04 N.m; stretch is the flex equality below (inextensible film). No contact or self-collision (MuJoCo Warp has no flex self-collision). -->
     <flex name="canopy" dim="2" radius="0.0005" rgba="0.85 0.72 0.25 0.7"
-          body="cv_00_0 cv_00_1 cv_00_2 cv_00_3 cv_00_4 cv_01_0 cv_01_1 cv_01_2 cv_01_3 cv_01_4 cv_02_0 cv_02_1 cv_02_2 cv_02_3 cv_02_4 cv_03_0 cv_03_1 cv_03_2 cv_03_3 cv_03_4 cv_04_0 cv_04_1 cv_04_2 cv_04_3 cv_04_4 cv_05_0 cv_05_1 cv_05_2 cv_05_3 cv_05_4 cv_06_0 cv_06_1 cv_06_2 cv_06_3 cv_06_4 cv_07_0 cv_07_1 cv_07_2 cv_07_3 cv_07_4 cv_08_0 cv_08_1 cv_08_2 cv_08_3 cv_08_4 cv_09_0 cv_09_1 cv_09_2 cv_09_3 cv_09_4 cv_10_0 cv_10_1 cv_10_2 cv_10_3 cv_10_4 cv_11_0 cv_11_1 cv_11_2 cv_11_3 cv_11_4 cv_12_0 cv_12_1 cv_12_2 cv_12_3 cv_12_4 cv_13_0 cv_13_1 cv_13_2 cv_13_3 cv_13_4 cv_14_0 cv_14_1 cv_14_2 cv_14_3 cv_14_4 cv_15_0 cv_15_1 cv_15_2 cv_15_3 cv_15_4"
-          vertex="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
-          element="0 1 5 5 1 6 1 2 6 6 2 7 2 3 7 7 3 8 3 4 8 8 4 9 5 6 10 10 6 11 6 7 11 11 7 12 7 8 12 12 8 13 8 9 13 13 9 14 10 11 15 15 11 16 11 12 16 16 12 17 12 13 17 17 13 18 13 14 18 18 14 19 15 16 20 20 16 21 16 17 21 21 17 22 17 18 22 22 18 23 18 19 23 23 19 24 20 21 25 25 21 26 21 22 26 26 22 27 22 23 27 27 23 28 23 24 28 28 24 29 25 26 30 30 26 31 26 27 31 31 27 32 27 28 32 32 28 33 28 29 33 33 29 34 30 31 35 35 31 36 31 32 36 36 32 37 32 33 37 37 33 38 33 34 38 38 34 39 35 36 40 40 36 41 36 37 41 41 37 42 37 38 42 42 38 43 38 39 43 43 39 44 40 41 45 45 41 46 41 42 46 46 42 47 42 43 47 47 43 48 43 44 48 48 44 49 45 46 50 50 46 51 46 47 51 51 47 52 47 48 52 52 48 53 48 49 53 53 49 54 50 51 55 55 51 56 51 52 56 56 52 57 52 53 57 57 53 58 53 54 58 58 54 59 55 56 60 60 56 61 56 57 61 61 57 62 57 58 62 62 58 63 58 59 63 63 59 64 60 61 65 65 61 66 61 62 66 66 62 67 62 63 67 67 63 68 63 64 68 68 64 69 65 66 70 70 66 71 66 67 71 71 67 72 67 68 72 72 68 73 68 69 73 73 69 74 70 71 75 75 71 76 71 72 76 76 72 77 72 73 77 77 73 78 73 74 78 78 74 79">
+          body="cv_00_0 cv_00_1 cv_00_2 cv_00_3 cv_00_4 cv_00_5 cv_00_6 cv_00_7 cv_00_8 cv_00_9 cv_00_10 cv_00_11 cv_01_0 cv_01_1 cv_01_2 cv_01_3 cv_01_4 cv_01_5 cv_01_6 cv_01_7 cv_01_8 cv_01_9 cv_01_10 cv_01_11 cv_02_0 cv_02_1 cv_02_2 cv_02_3 cv_02_4 cv_02_5 cv_02_6 cv_02_7 cv_02_8 cv_02_9 cv_02_10 cv_02_11 cv_03_0 cv_03_1 cv_03_2 cv_03_3 cv_03_4 cv_03_5 cv_03_6 cv_03_7 cv_03_8 cv_03_9 cv_03_10 cv_03_11 cv_04_0 cv_04_1 cv_04_2 cv_04_3 cv_04_4 cv_04_5 cv_04_6 cv_04_7 cv_04_8 cv_04_9 cv_04_10 cv_04_11 cv_05_0 cv_05_1 cv_05_2 cv_05_3 cv_05_4 cv_05_5 cv_05_6 cv_05_7 cv_05_8 cv_05_9 cv_05_10 cv_05_11 cv_06_0 cv_06_1 cv_06_2 cv_06_3 cv_06_4 cv_06_5 cv_06_6 cv_06_7 cv_06_8 cv_06_9 cv_06_10 cv_06_11 cv_07_0 cv_07_1 cv_07_2 cv_07_3 cv_07_4 cv_07_5 cv_07_6 cv_07_7 cv_07_8 cv_07_9 cv_07_10 cv_07_11 cv_08_0 cv_08_1 cv_08_2 cv_08_3 cv_08_4 cv_08_5 cv_08_6 cv_08_7 cv_08_8 cv_08_9 cv_08_10 cv_08_11 cv_09_0 cv_09_1 cv_09_2 cv_09_3 cv_09_4 cv_09_5 cv_09_6 cv_09_7 cv_09_8 cv_09_9 cv_09_10 cv_09_11 cv_10_0 cv_10_1 cv_10_2 cv_10_3 cv_10_4 cv_10_5 cv_10_6 cv_10_7 cv_10_8 cv_10_9 cv_10_10 cv_10_11 cv_11_0 cv_11_1 cv_11_2 cv_11_3 cv_11_4 cv_11_5 cv_11_6 cv_11_7 cv_11_8 cv_11_9 cv_11_10 cv_11_11 cv_12_0 cv_12_1 cv_12_2 cv_12_3 cv_12_4 cv_12_5 cv_12_6 cv_12_7 cv_12_8 cv_12_9 cv_12_10 cv_12_11 cv_13_0 cv_13_1 cv_13_2 cv_13_3 cv_13_4 cv_13_5 cv_13_6 cv_13_7 cv_13_8 cv_13_9 cv_13_10 cv_13_11 cv_14_0 cv_14_1 cv_14_2 cv_14_3 cv_14_4 cv_14_5 cv_14_6 cv_14_7 cv_14_8 cv_14_9 cv_14_10 cv_14_11 cv_15_0 cv_15_1 cv_15_2 cv_15_3 cv_15_4 cv_15_5 cv_15_6 cv_15_7 cv_15_8 cv_15_9 cv_15_10 cv_15_11"
+          vertex="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+          element="0 1 12 12 1 13 1 2 13 13 2 14 2 3 14 14 3 15 3 4 15 15 4 16 4 5 16 16 5 17 5 6 17 17 6 18 6 7 18 18 7 19 7 8 19 19 8 20 8 9 20 20 9 21 9 10 21 21 10 22 10 11 22 22 11 23 11 0 23 23 0 12 12 13 24 24 13 25 13 14 25 25 14 26 14 15 26 26 15 27 15 16 27 27 16 28 16 17 28 28 17 29 17 18 29 29 18 30 18 19 30 30 19 31 19 20 31 31 20 32 20 21 32 32 21 33 21 22 33 33 22 34 22 23 34 34 23 35 23 12 35 35 12 24 24 25 36 36 25 37 25 26 37 37 26 38 26 27 38 38 27 39 27 28 39 39 28 40 28 29 40 40 29 41 29 30 41 41 30 42 30 31 42 42 31 43 31 32 43 43 32 44 32 33 44 44 33 45 33 34 45 45 34 46 34 35 46 46 35 47 35 24 47 47 24 36 36 37 48 48 37 49 37 38 49 49 38 50 38 39 50 50 39 51 39 40 51 51 40 52 40 41 52 52 41 53 41 42 53 53 42 54 42 43 54 54 43 55 43 44 55 55 44 56 44 45 56 56 45 57 45 46 57 57 46 58 46 47 58 58 47 59 47 36 59 59 36 48 48 49 60 60 49 61 49 50 61 61 50 62 50 51 62 62 51 63 51 52 63 63 52 64 52 53 64 64 53 65 53 54 65 65 54 66 54 55 66 66 55 67 55 56 67 67 56 68 56 57 68 68 57 69 57 58 69 69 58 70 58 59 70 70 59 71 59 48 71 71 48 60 60 61 72 72 61 73 61 62 73 73 62 74 62 63 74 74 63 75 63 64 75 75 64 76 64 65 76 76 65 77 65 66 77 77 66 78 66 67 78 78 67 79 67 68 79 79 68 80 68 69 80 80 69 81 69 70 81 81 70 82 70 71 82 82 71 83 71 60 83 83 60 72 72 73 84 84 73 85 73 74 85 85 74 86 74 75 86 86 75 87 75 76 87 87 76 88 76 77 88 88 77 89 77 78 89 89 78 90 78 79 90 90 79 91 79 80 91 91 80 92 80 81 92 92 81 93 81 82 93 93 82 94 82 83 94 94 83 95 83 72 95 95 72 84 84 85 96 96 85 97 85 86 97 97 86 98 86 87 98 98 87 99 87 88 99 99 88 100 88 89 100 100 89 101 89 90 101 101 90 102 90 91 102 102 91 103 91 92 103 103 92 104 92 93 104 104 93 105 93 94 105 105 94 106 94 95 106 106 95 107 95 84 107 107 84 96 96 97 108 108 97 109 97 98 109 109 98 110 98 99 110 110 99 111 99 100 111 111 100 112 100 101 112 112 101 113 101 102 113 113 102 114 102 103 114 114 103 115 103 104 115 115 104 116 104 105 116 116 105 117 105 106 117 117 106 118 106 107 118 118 107 119 107 96 119 119 96 108 108 109 120 120 109 121 109 110 121 121 110 122 110 111 122 122 111 123 111 112 123 123 112 124 112 113 124 124 113 125 113 114 125 125 114 126 114 115 126 126 115 127 115 116 127 127 116 128 116 117 128 128 117 129 117 118 129 129 118 130 118 119 130 130 119 131 119 108 131 131 108 120 120 121 132 132 121 133 121 122 133 133 122 134 122 123 134 134 123 135 123 124 135 135 124 136 124 125 136 136 125 137 125 126 137 137 126 138 126 127 138 138 127 139 127 128 139 139 128 140 128 129 140 140 129 141 129 130 141 141 130 142 130 131 142 142 131 143 131 120 143 143 120 132 132 133 144 144 133 145 133 134 145 145 134 146 134 135 146 146 135 147 135 136 147 147 136 148 136 137 148 148 137 149 137 138 149 149 138 150 138 139 150 150 139 151 139 140 151 151 140 152 140 141 152 152 141 153 141 142 153 153 142 154 142 143 154 154 143 155 143 132 155 155 132 144 144 145 156 156 145 157 145 146 157 157 146 158 146 147 158 158 147 159 147 148 159 159 148 160 148 149 160 160 149 161 149 150 161 161 150 162 150 151 162 162 151 163 151 152 163 163 152 164 152 153 164 164 153 165 153 154 165 165 154 166 154 155 166 166 155 167 155 144 167 167 144 156 156 157 168 168 157 169 157 158 169 169 158 170 158 159 170 170 159 171 159 160 171 171 160 172 160 161 172 172 161 173 161 162 173 173 162 174 162 163 174 174 163 175 163 164 175 175 164 176 164 165 176 176 165 177 165 166 177 177 166 178 166 167 178 178 167 179 167 156 179 179 156 168 168 169 180 180 169 181 169 170 181 181 170 182 170 171 182 182 171 183 171 172 183 183 172 184 172 173 184 184 173 185 173 174 185 185 174 186 174 175 186 186 175 187 175 176 187 187 176 188 176 177 188 188 177 189 177 178 189 189 178 190 178 179 190 190 179 191 179 168 191 191 168 180">
       <contact contype="0" conaffinity="0" selfcollide="none"/>
       <elasticity young="3.600e+09" poisson="0.4" thickness="1.250e-04" elastic2d="bend"/>
+    </flex>
+    <!-- End plates closing both wing tips: edge-length constraints only, no bending (see build_paramotor.py, TIPS). -->
+    <flex name="canopy_tips" dim="2" radius="0.0005" rgba="0.80 0.62 0.22 0.7"
+          body="cv_00_0 cv_00_1 cv_00_2 cv_00_3 cv_00_4 cv_00_5 cv_00_6 cv_00_7 cv_00_8 cv_00_9 cv_00_10 cv_00_11 cv_15_0 cv_15_1 cv_15_2 cv_15_3 cv_15_4 cv_15_5 cv_15_6 cv_15_7 cv_15_8 cv_15_9 cv_15_10 cv_15_11"
+          vertex="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+          element="5 6 4 6 7 3 6 3 4 7 8 2 7 2 3 8 9 1 8 1 2 9 10 0 9 0 1 10 11 0 17 18 16 18 19 15 18 15 16 19 20 14 19 14 15 20 21 13 20 13 14 21 22 12 21 12 13 22 23 12">
+      <contact contype="0" conaffinity="0" selfcollide="none"/>
     </flex>
   </deformable>
 
   <equality>
     <flex flex="canopy" solref="0.004 1"/>
+    <flex flex="canopy_tips" solref="0.004 1"/>
   </equality>
 
   <tendon>
     <!-- - suspension lines: UHMWPE, tension-only (upper limit = taut)  -->
-    <spatial name="line_A0" class="line" range="0 0.476435">
+    <spatial name="line_A0" class="line" range="0 0.472536">
       <site site="hp_fr"/>
-      <site site="cv_01_1"/>
+      <site site="cv_01_2"/>
     </spatial>
-    <spatial name="line_A2" class="line" range="0 0.511822">
+    <spatial name="line_A2" class="line" range="0 0.504402">
       <site site="hp_fr"/>
-      <site site="cv_03_1"/>
+      <site site="cv_03_2"/>
     </spatial>
-    <spatial name="line_C4" class="line" range="0 0.542401">
+    <spatial name="line_A4" class="line" range="0 0.532247">
+      <site site="hp_fr"/>
+      <site site="cv_05_2"/>
+    </spatial>
+    <spatial name="line_C4" class="line" range="0 0.541951">
       <site site="hp_cr"/>
-      <site site="cv_05_4"/>
+      <site site="cv_05_11"/>
     </spatial>
-    <spatial name="line_C6" class="line" range="0 0.559997">
+    <spatial name="line_A6" class="line" range="0 0.551094">
+      <site site="hp_fr"/>
+      <site site="cv_07_2"/>
+    </spatial>
+    <spatial name="line_C6" class="line" range="0 0.559561">
       <site site="hp_cr"/>
-      <site site="cv_07_4"/>
+      <site site="cv_07_11"/>
     </spatial>
-    <spatial name="line_C7" class="line" range="0 0.559997">
-      <site site="hp_cl"/>
-      <site site="cv_08_4"/>
-    </spatial>
-    <spatial name="line_C9" class="line" range="0 0.542401">
-      <site site="hp_cl"/>
-      <site site="cv_10_4"/>
-    </spatial>
-    <spatial name="line_A11" class="line" range="0 0.511822">
+    <spatial name="line_A7" class="line" range="0 0.551094">
       <site site="hp_fl"/>
-      <site site="cv_12_1"/>
+      <site site="cv_08_2"/>
     </spatial>
-    <spatial name="line_A13" class="line" range="0 0.476435">
+    <spatial name="line_C7" class="line" range="0 0.559561">
+      <site site="hp_cl"/>
+      <site site="cv_08_11"/>
+    </spatial>
+    <spatial name="line_A9" class="line" range="0 0.532247">
       <site site="hp_fl"/>
-      <site site="cv_14_1"/>
+      <site site="cv_10_2"/>
+    </spatial>
+    <spatial name="line_C9" class="line" range="0 0.541951">
+      <site site="hp_cl"/>
+      <site site="cv_10_11"/>
+    </spatial>
+    <spatial name="line_A11" class="line" range="0 0.504402">
+      <site site="hp_fl"/>
+      <site site="cv_12_2"/>
+    </spatial>
+    <spatial name="line_A13" class="line" range="0 0.472536">
+      <site site="hp_fl"/>
+      <site site="cv_14_2"/>
     </spatial>
 
     <!-- Brake lines: servo arm tip straight to the trailing-edge tip vertex, two sites. Tension-only, like the suspension: slack below L0, carrying load at L0. Pulling it deflects the deformable trailing edge, as on a real single-skin wing. -->
-    <spatial name="brake_L" class="brake" range="0 0.452696">
+    <spatial name="brake_L" class="brake" range="0 0.451720">
       <site site="bl_start_L"/>
-      <site site="cv_15_4"/>
+      <site site="cv_15_11"/>
     </spatial>
-    <spatial name="brake_R" class="brake" range="0 0.452696">
+    <spatial name="brake_R" class="brake" range="0 0.451720">
       <site site="bl_start_R"/>
-      <site site="cv_00_4"/>
+      <site site="cv_00_11"/>
     </spatial>
   </tendon>
 

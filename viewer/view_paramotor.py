@@ -102,7 +102,7 @@ class OdometryCSV:
         def attitude(body):
             if body == "canopy":  # deformable skin: its mean frame
                 P = self.mesh.positions(d.qpos)
-                Rc, area, _ = paramotor_aero.cell_frames(P)
+                Rc, area, _ = paramotor_aero.cell_frames(self.mesh.lifting(P))
                 R = paramotor_aero.canopy_state(P, np.zeros_like(P), self.mesh.mass, Rc, area)[3]
             else:
                 R = d.xmat[m.body(body).id].reshape(3, 3)
