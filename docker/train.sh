@@ -7,6 +7,8 @@
 #   docker/train.sh --name baseline --seeds 5 --updates 500  # runs/baseline/seed0..4
 #   docker/train.sh --compare baseline high_lr       # rliable comparison of configs
 #   docker/train.sh --smoke                          # minute-long end-to-end check
+#   docker/train.sh --name first --verbose           # + docker build output, PPO losses/KL per
+#                                                    #   update, watcher messages (-v also works)
 #   docker/train.sh --analyze first                  # re-plot runs/first (works mid-training)
 #   docker/train.sh --cpu --smoke                    # no GPU: CPU image, no --gpus
 #   docker/train.sh --name first --episodes 100      # 100 evaluation flights per route
@@ -38,7 +40,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 NAME="ppo-$(date +%Y%m%d-%H%M%S)"
-CPU=0 RESUME=0 SMOKE=0 SEEDS=1 SEED=0 EPISODES=20 MODE=train HEADED=0
+CPU=0 RESUME=0 SMOKE=0 SEEDS=1 SEED=0 EPISODES=20 MODE=train HEADED=0 VERBOSE=0
 TARGETS=() TRAIN_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -52,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --analyze)   MODE=analyze; TARGETS+=("$2"); shift 2 ;;
     --test)      MODE=test; shift; TARGETS=("$@"); break ;;
     --headed)    HEADED=1; shift ;;
+    --verbose|-v) VERBOSE=1; TRAIN_ARGS+=(--verbose); shift ;;
     --watch)     MODE=watch; TARGETS+=("$2"); shift 2 ;;
     --viewer)    MODE=viewer; shift; TARGETS=("$@"); break ;;
     --compare)   MODE=compare; shift
@@ -64,7 +67,11 @@ done
 if [[ $CPU -eq 1 ]]; then JAX_CUDA=cpu; else JAX_CUDA="${JAX_CUDA:-cuda13}"; fi
 IMAGE="paramotor-rl:$JAX_CUDA"
 
-docker build -q -f docker/Dockerfile -t "$IMAGE" --build-arg JAX_CUDA="$JAX_CUDA" . >/dev/null
+if [[ $VERBOSE -eq 1 ]]; then
+  docker build -f docker/Dockerfile -t "$IMAGE" --build-arg JAX_CUDA="$JAX_CUDA" .
+else
+  docker build -q -f docker/Dockerfile -t "$IMAGE" --build-arg JAX_CUDA="$JAX_CUDA" . >/dev/null
+fi
 
 # Run as the host user so runs/ is not owned by root. HOME and MPLCONFIGDIR
 # point at /tmp because that user has no home directory in the image.
@@ -140,8 +147,13 @@ if [[ $HEADED -eq 1 ]]; then
   # The watcher window runs beside training in its own container and stays
   # open after training ends; close the window to stop it.
   mkdir -p "runs/$NAME"
-  ( use_display; in_container python -m viewer.watch_training "runs/$NAME" \
-      > "runs/$NAME/watch.log" 2>&1 ) &
+  if [[ $VERBOSE -eq 1 ]]; then  # watcher messages in this terminal too, prefixed
+    ( use_display; in_container python -m viewer.watch_training "runs/$NAME" 2>&1 \
+        | tee "runs/$NAME/watch.log" | sed -u 's/^/[watch] /' ) &
+  else
+    ( use_display; in_container python -m viewer.watch_training "runs/$NAME" \
+        > "runs/$NAME/watch.log" 2>&1 ) &
+  fi
   echo "== watcher window started (log: runs/$NAME/watch.log); it opens after the first checkpoint"
 fi
 

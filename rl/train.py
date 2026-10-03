@@ -295,6 +295,11 @@ def main():
         action="store_true",
         help="tiny end-to-end PPO run, not a trained policy",
     )
+    ap.add_argument(
+        "--verbose",
+        action="store_true",
+        help="also print PPO losses, entropy, KL, tracking errors and episode stats every update",
+    )
     args = ap.parse_args()
     saved = load_checkpoint(args.resume) if args.resume else None
     raw = json.loads(args.config.read_text()) if args.config else {}
@@ -453,6 +458,15 @@ def main():
                 f"level={difficulty:.2f} {speed:.1f} steps/s",
                 flush=True,
             )
+            if args.verbose:
+                print(
+                    f"    ppo: policy_loss={loss[0]:+.4f} value_loss={loss[1]:.4f} "
+                    f"entropy={loss[2]:.3f} approx_kl={loss[3]:.5f} | altitude_err="
+                    f"{metrics[:,:,1].mean():.2f} m outside_alpha={metrics[:,:,3].mean():.1%} | "
+                    f"episodes_ended={int(ended)} finished_return={finished:.1f} | "
+                    f"{count / speed:.1f} s/update, {env_steps / 1e6:.2f} M steps total",
+                    flush=True,
+                )
             if ec.curriculum and (iteration + 1) % pc.eval_every == 0:
                 result = np.asarray(gate(learner.params, difficulty))
                 print(
