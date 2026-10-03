@@ -32,6 +32,40 @@ MuJoCo and MJX are pinned together. `paramotor_mjx.py` uses a few private MJX
 forward-stage functions to inject aerodynamic forces at the correct point in the
 solver. Run the parity tests before upgrading either package.
 
+## Docker
+
+The container is the portable way to move between GPU machines. The host needs
+only an NVIDIA driver and the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html);
+the JAX CUDA wheels inside the image bring their own CUDA runtime.
+
+```bash
+# Host check: the driver is visible to Docker.
+docker run --rm --gpus all ubuntu nvidia-smi
+
+# Build once per machine (CUDA 13 default; JAX_CUDA=cuda12 for older drivers).
+docker compose build
+docker compose run --rm rl                  # prints [CudaDevice(id=0)]
+
+# Every command from "Run" below works the same way, prefixed:
+docker compose run --rm rl python -m pytest test_rl.py -q
+docker compose run --rm rl python train.py --smoke --output runs/smoke
+docker compose run --rm rl python train.py --num-envs 256 --updates 1000 --output runs/first
+```
+
+The repo is mounted at `/workspace`, so code edits take effect without a rebuild
+and `runs/` is written to the host. Rebuild only after changing
+`requirements-rl.txt`. Without a GPU, build the CPU image and run it without
+compose's GPU reservation:
+
+```bash
+docker build -t paramotor-rl:cpu --build-arg JAX_CUDA=cpu .
+docker run --rm -v "$PWD:/workspace" paramotor-rl:cpu python test_aero.py
+```
+
+The container is headless, so `evaluate.py --view` and `view.sh` must run on the
+host; copy the checkpoint out of `runs/` and view it there.
+
 ## Run
 
 ```bash
