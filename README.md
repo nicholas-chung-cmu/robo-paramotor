@@ -13,7 +13,7 @@ MuJoCo model of a 1 m PEEK paramotor, with a JAX/MJX port for PPO training.
 | `docker/` | GPU training image and `train.sh` (train + evaluate + analyze in one command) |
 | `data/flights/` | Logged viewer flights (odometry CSVs) |
 | `docs/` | `MODEL_NOTES.md`, `RL.md`, the model-alignment report, papers, images |
-| `todo/` | Current plan (`RL_TODO_v2.md`); superseded plans in `todo/archive/` |
+| `todo/` | Open items (`TODO.md`), the phased plan (`RL_TODO_v2.md`); superseded plans in `todo/archive/` |
 
 Run everything from the repo root. Python modules are run with `python -m`:
 
