@@ -12,10 +12,13 @@
 #   docker/train.sh --name first --episodes 100      # 100 evaluation flights per route
 #   docker/train.sh --test                           # run the test suite in the image
 #   docker/train.sh --test tests/test_rl.py -k gps   # any pytest arguments after --test
-#   docker/train.sh --headed                         # MuJoCo viewer window from the container
-#   docker/train.sh --headed --sweep --zoom 12       # viewer options after --headed
-#   docker/train.sh --headed python -m rl.evaluate runs/first/checkpoint.pkl \
-#       --path left --episodes 1 --view              # replay a policy flight (-> <run>/replay)
+#   docker/train.sh --name first --headed            # train + a window replaying, for every
+#                                                    # new checkpoint, its best of 32 flights
+#   docker/train.sh --watch first                    # that window for a run already training
+#   docker/train.sh --viewer                         # interactive MuJoCo viewer (free flight)
+#   docker/train.sh --viewer --sweep --zoom 12       # viewer options after --viewer
+#   docker/train.sh --viewer python -m rl.evaluate runs/first/checkpoint.pkl \
+#       --path left --episodes 1 --view              # replay one evaluation flight
 #
 # Any option it does not recognise goes straight to `python -m rl.train`
 # (see `python -m rl.train --help`; --config file.json takes env/ppo overrides).
@@ -35,7 +38,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 NAME="ppo-$(date +%Y%m%d-%H%M%S)"
-CPU=0 RESUME=0 SMOKE=0 SEEDS=1 SEED=0 EPISODES=20 MODE=train
+CPU=0 RESUME=0 SMOKE=0 SEEDS=1 SEED=0 EPISODES=20 MODE=train HEADED=0
 TARGETS=() TRAIN_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -48,7 +51,9 @@ while [[ $# -gt 0 ]]; do
     --episodes)  EPISODES="$2"; shift 2 ;;
     --analyze)   MODE=analyze; TARGETS+=("$2"); shift 2 ;;
     --test)      MODE=test; shift; TARGETS=("$@"); break ;;
-    --headed)    MODE=headed; shift; TARGETS=("$@"); break ;;
+    --headed)    HEADED=1; shift ;;
+    --watch)     MODE=watch; TARGETS+=("$2"); shift 2 ;;
+    --viewer)    MODE=viewer; shift; TARGETS=("$@"); break ;;
     --compare)   MODE=compare; shift
                  while [[ $# -gt 0 && "$1" != --* ]]; do TARGETS+=("$1"); shift; done ;;
     -h|--help)   sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
@@ -78,21 +83,29 @@ run_dirs() {
   if [[ -d "${seeds[0]}" ]]; then printf '%s\n' "${seeds[@]%/}"; else echo "runs/$1"; fi
 }
 
+# Share the host X server: its socket plus this session's auth cookie, so no
+# `xhost +` is needed. Linux/X11 (incl. XWayland) only.
+use_display() {
+  [[ -n "${DISPLAY:-}" && -d /tmp/.X11-unix ]] || {
+    echo "train.sh: a window needs an X11 display (DISPLAY is unset)" >&2; exit 1; }
+  display=(-e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix:ro)
+  if [[ -n "${XAUTHORITY:-}" && -f "$XAUTHORITY" ]]; then
+    display+=(-e XAUTHORITY=/tmp/.Xauthority -v "$XAUTHORITY:/tmp/.Xauthority:ro")
+  fi
+}
+
 case "$MODE" in
-  headed)
-    # Share the host X server: its socket plus this session's auth cookie, so
-    # no `xhost +` is needed. Linux/X11 (incl. XWayland) only.
-    [[ -n "${DISPLAY:-}" && -d /tmp/.X11-unix ]] || {
-      echo "train.sh: --headed needs an X11 display (DISPLAY is unset)" >&2; exit 1; }
-    display=(-e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix:ro)
-    if [[ -n "${XAUTHORITY:-}" && -f "$XAUTHORITY" ]]; then
-      display+=(-e XAUTHORITY=/tmp/.Xauthority -v "$XAUTHORITY:/tmp/.Xauthority:ro")
-    fi
-    # Bare --headed or viewer options: the interactive viewer. Else: any command.
+  viewer)
+    use_display
+    # Bare --viewer or viewer options: the interactive viewer. Else: any command.
     if [[ ${#TARGETS[@]} -eq 0 || "${TARGETS[0]}" == --* ]]; then
       TARGETS=(python -m viewer.view_paramotor ${TARGETS[@]+"${TARGETS[@]}"})
     fi
     in_container "${TARGETS[@]}"
+    exit $? ;;
+  watch)
+    use_display
+    in_container python -m viewer.watch_training "runs/${TARGETS[0]}"
     exit $? ;;
   test)
     in_container python -m pytest -v ${TARGETS[@]+"${TARGETS[@]}"}
@@ -122,6 +135,15 @@ train_one() {
   in_container python -m rl.train --output "$run" "${extra[@]}" \
     ${TRAIN_ARGS[@]+"${TRAIN_ARGS[@]}"} 2>&1 | tee -a "$run/train.log"
 }
+
+if [[ $HEADED -eq 1 ]]; then
+  # The watcher window runs beside training in its own container and stays
+  # open after training ends; close the window to stop it.
+  mkdir -p "runs/$NAME"
+  ( use_display; in_container python -m viewer.watch_training "runs/$NAME" \
+      > "runs/$NAME/watch.log" 2>&1 ) &
+  echo "== watcher window started (log: runs/$NAME/watch.log); it opens after the first checkpoint"
+fi
 
 RUNS=()
 if [[ $SEEDS -le 1 ]]; then

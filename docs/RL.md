@@ -51,7 +51,7 @@ docker/train.sh --name baseline --seeds 5 --updates 500  # runs/baseline/seed0..
 docker/train.sh --name high_lr --seeds 5 --updates 500 --config configs/high_lr.json
 docker/train.sh --compare baseline high_lr               # rliable statistics + plots
 docker/train.sh --test                                   # test suite, live output
-docker/train.sh --headed                                 # viewer window from the container
+docker/train.sh --name first --headed                    # train + watch the best flight per checkpoint
 ```
 
 Options it does not recognise are passed to `python -m rl.train`. The steps it
@@ -83,16 +83,28 @@ docker run --rm -v "$PWD:/workspace" paramotor-rl:cpu python -m tests.test_aero
 ```
 
 On a Linux desktop (X11 or XWayland) the container can also open windows.
-`--headed` shares the host's X socket and this session's X auth cookie (no
-`xhost +` needed) and lets the NVIDIA runtime inject its OpenGL driver, so the
-viewer renders on the GPU:
+Windows share the host's X socket and this session's X auth cookie (no
+`xhost +` needed), and the NVIDIA runtime injects its OpenGL driver, so they
+render on the GPU:
 
 ```bash
-docker/train.sh --headed                          # live MuJoCo viewer
-docker/train.sh --headed --sweep --zoom 12        # any viewer/view.sh options
-docker/train.sh --headed python -m rl.evaluate runs/first/checkpoint.pkl \
-    --path left --episodes 1 --view               # replay a policy flight
+docker/train.sh --name first --headed --updates 2000   # train + watch it learn
+docker/train.sh --watch first                    # watch a run that is already training
+docker/train.sh --viewer                         # interactive MuJoCo viewer (free flight)
+docker/train.sh --viewer --sweep --zoom 12       # any viewer/view.sh options
+docker/train.sh --viewer python -m rl.evaluate runs/first/checkpoint.pkl \
+    --path left --episodes 1 --view              # replay one evaluation flight
 ```
+
+The training watcher (`viewer/watch_training.py`) waits for each new
+checkpoint, flies the latest policy on 32 fixed-seed routes at the run's current
+curriculum difficulty, and replays the flight that got furthest along its route,
+with the route drawn and an overlay: update, environment steps, difficulty,
+the best and median distance, and whether this is a new best. It evaluates in a
+background thread on the GPU, sharing it with training (a few percent of
+training throughput), and keeps the previous best flight playing meanwhile.
+With `--seeds` it follows whichever seed is training. The window stays open
+after training ends; close it to stop the watcher.
 
 A `--view` replay writes its one flight to `<run>/replay/`, never over
 `<run>/eval/`. On macOS, run `viewer/view.sh` on the host instead (the viewer
