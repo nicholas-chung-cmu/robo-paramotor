@@ -6,3 +6,4 @@ mujoco-mjx==3.13.0
 flax==0.12.10
 optax==0.2.8
 pytest>=8,<10
+matplotlib==3.10.7

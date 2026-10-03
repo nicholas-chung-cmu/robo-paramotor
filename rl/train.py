@@ -373,8 +373,26 @@ def main():
         flush=True,
     )
     mode = "a" if saved and (args.output / "metrics.csv").exists() else "w"
-    with (args.output / "metrics.csv").open(mode, newline="", buffering=1) as f:
+    gate_mode = "a" if saved and (args.output / "eval.csv").exists() else "w"
+    with (args.output / "metrics.csv").open(mode, newline="", buffering=1) as f, (
+        args.output / "eval.csv"
+    ).open(gate_mode, newline="", buffering=1) as gate_file:
         writer = csv.writer(f)
+        gate_writer = csv.writer(gate_file)
+        if gate_mode == "w":
+            gate_writer.writerow(
+                [
+                    "update",
+                    "steps",
+                    "difficulty",
+                    "cross_track_m",
+                    "altitude_error_m",
+                    "alpha_outside_fraction",
+                    "failure_rate",
+                    "progress_m_s",
+                    "passed",
+                ]
+            )
         if mode == "w":
             writer.writerow(
                 [
@@ -435,13 +453,17 @@ def main():
                     result,
                     flush=True,
                 )
-                if (
+                passed = bool(
                     result[0] < 3
                     and result[1] < 2
                     and result[2] < 0.05
                     and result[3] < 0.1
                     and result[4] > 2.0
-                ):
+                )
+                gate_writer.writerow(
+                    [iteration + 1, env_steps, difficulty, *result, int(passed)]
+                )
+                if passed:
                     difficulty = min(1.0, difficulty + 0.2)
             if (
                 iteration + 1

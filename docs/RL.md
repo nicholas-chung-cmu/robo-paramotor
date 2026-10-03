@@ -39,6 +39,19 @@ only an NVIDIA driver and the
 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html);
 the JAX CUDA wheels inside the image bring their own CUDA runtime.
 
+The one-command path is `docker/train.sh`. It builds the image if needed, then
+trains, evaluates on the fixed routes and writes plots, all into `runs/<name>/`:
+
+```bash
+docker/train.sh --smoke                                  # ~1 min end-to-end check
+docker/train.sh --name first --num-envs 256 --updates 2000
+docker/train.sh --name first --resume --updates 1000     # continue the same run
+docker/train.sh --analyze first                          # re-plot, also mid-training
+```
+
+Options it does not recognise are passed to `python -m rl.train`. The steps it
+runs can also be done by hand:
+
 ```bash
 # Host check: the driver is visible to Docker.
 docker run --rm --gpus all ubuntu nvidia-smi
@@ -97,8 +110,8 @@ ROS launch-testing plugins).
 
 The first rollout compiles and can take substantially longer than later updates.
 The smoke run also exercises episode resets and the curriculum gate. It only checks execution; it does not produce a useful trained pilot.
-Training writes `config.json`, `metrics.csv`, and `checkpoint.pkl`. Evaluation
-writes per-step `flights.csv` and per-flight `summary.csv`, including failures and
+Training writes `config.json`, `metrics.csv`, `eval.csv` (curriculum gate results), and `checkpoint.pkl`. Evaluation
+writes per-step `flights.csv`, per-flight `summary.csv` and the target `routes.csv`, including failures and
 how long each flight survived. Compare returns together with distance traveled,
 tracking error, failure rate and time outside the aerodynamic envelope.
 
@@ -276,3 +289,24 @@ window still needs a manual visual check.
 Training uses 10 constraint-solver iterations and 5 line-search iterations;
 both are configurable. Native/MJX numerical parity checks use matching solver
 settings, in addition to checking the aerodynamic forces themselves.
+
+## Tracking and analysis
+
+`python -m rl.analyze runs/<name>` (or `docker/train.sh --analyze <name>`) reads
+whatever the run has written so far and produces `runs/<name>/analysis/`:
+
+- `training.png`: one point per PPO update, from the training rollouts themselves.
+  Reward, finished-episode return, cross-track and altitude error, envelope
+  violations and curriculum difficulty show whether the pilot is improving.
+  Policy/value loss, entropy and approximate KL show whether PPO is healthy.
+- `curriculum.png`: the fixed-seed gate run every `eval_every` updates, with
+  each pass threshold drawn. Difficulty advances by 0.2 when all five pass.
+- `evaluation.png`: per-route completion, failure, cross-track and progress from
+  `rl.evaluate`, with top-down tracks drawn over the target route.
+- `report.md`: the same headline numbers as text, to paste into notes.
+
+Read them in this order. Training reward rises at fixed difficulty but drops
+each time the curriculum steps up, so judge progress against the difficulty
+trace, not reward alone. The gate flies only 10 s (250 steps) per seed, so a
+policy can pass it and still fail the 60 s evaluation flights. The evaluation
+is the real test.

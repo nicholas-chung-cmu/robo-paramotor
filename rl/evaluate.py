@@ -89,8 +89,8 @@ def make_evaluator(env, network, steps):
 def replay(env, route, qpos, qvel, ctrl):
     import mujoco
     import mujoco.viewer
-    from paramotor_aero import ParamotorAero
-    from paramotor_params import PEEK_1M
+    from model.paramotor_aero import ParamotorAero
+    from model.paramotor_params import PEEK_1M
 
     model = env.m
     data = mujoco.MjData(model)
@@ -220,7 +220,14 @@ def main():
             ]
         )
         writer.writerows(summary)
-    print("Wrote", args.output / "summary.csv", "and flights.csv", flush=True)
+    arcs = np.asarray(states.arc)
+    with (args.output / "routes.csv").open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["path", "seed", "arc_m", "x_m", "y_m", "z_m"])
+        for i, (name, seed) in enumerate(zip(names, seeds)):
+            for arc, point in zip(arcs[i], np.asarray(points[i])):
+                writer.writerow([name, seed, arc, *point])
+    print("Wrote", args.output / "summary.csv", "flights.csv and routes.csv", flush=True)
     if args.view:
         mask = active[:, 0]
         replay(env, np.asarray(points[0]), qpos[mask, 0], qvel[mask, 0], ctrl[mask, 0])
