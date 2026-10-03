@@ -69,19 +69,6 @@ Measured baseline, 2026-09-23: `nq=17 nv=15 nu=3 nsensordata=30`,
 
 ## 1. Physics that will silently invalidate a trained policy
 
-//this is an acceptable approximation and will be how we build the physical model 
-- [ ] **Brakes produce no aerodynamic effect.** `brake_wrench_frd()` returns
-      zero. The only thing a brake command does today is rotate the rigid canopy
-      geometrically through the tendons. A PPO policy will learn *that* mechanism,
-      which is not the real one. This is the single biggest correctness gap for a
-      controls task. Either identify C_Lδa / C_Ddelta_a / C_lδa / C_nδa on the
-      vehicle, or implement model **B** from `MODEL_NOTES.md` §7 (per-panel
-      spanwise twist DOFs) so brake authority comes out of geometry. §7 already
-      recommends B as the next step.
-      - Note: if panels get their own DOFs, the strip fast path **raises** —
-        `ParamotorAero.__init__` explicitly rejects `body_dofnum != 0` panels.
-        `_apply_strip` must move to `mj_objectVelocity` per panel first.
-
 //there is a hardware clamp that is acceptable
 - [ ] **Thrust above ~1.0 N departs.** Documented open issue (§6): above ~1 N the
       suspension goes fully slack, the canopy tumbles, α hits ±180°, and the
@@ -121,6 +108,8 @@ Measured baseline, 2026-09-23: `nq=17 nv=15 nu=3 nsensordata=30`,
 - [ ] **Vectorize.** `SubprocVecEnv` with 8–16 workers is the low-effort path and
       also resolves the global-callback problem above. Measure actual
       steps/second; the Python aero callback is the bottleneck, not MuJoCo.
+
+      -- user note, validate re-writting it into a compilable(c++ or rust) implimentation to increase speed. 
 - [ ] **Profile the aero callback.** It runs at 2000 Hz and does a per-panel
       numpy pass plus a Python `mj_applyFT` loop over bodies. Two cheap wins:
       hoist the `np.flatnonzero` loop, and evaluate whether aero can run at a
@@ -130,9 +119,12 @@ Measured baseline, 2026-09-23: `nq=17 nv=15 nu=3 nsensordata=30`,
       `mj_applyFT`, `mj_objectVelocity`, in-place numpy). Porting strip theory to
       JAX is a real project. Either commit to it now or commit to CPU
       vectorization now — do not half-do both.
+      use MJX :}
+
 - [ ] **Consider a larger timestep.** `dt=5e-4` with `implicit`. Test whether
       `1e-3` or `2e-3` is stable with the tendon constraints and the servo
       armature; that is a free 2–4x.
+
 
 ## 3. Sim-to-real — needed if the policy is ever meant to fly
 
@@ -141,6 +133,7 @@ Measured baseline, 2026-09-23: `nq=17 nv=15 nu=3 nsensordata=30`,
       (see the `<sensor>` comment). Write an observation-corruption layer — white
       noise, gyro bias random walk, GNSS latency and rate (it is *not* 50 Hz),
       baro drift, magnetometer hard/soft iron.
+     
 - [ ] **Sensor rates.** GNSS is ~10 Hz, IMU ~200 Hz+, baro ~50 Hz. Feeding all of
       them at the control rate trains a policy on information it will not have.
 - [ ] **Domain randomization.** The parameter file tags every coefficient
@@ -179,11 +172,14 @@ Measured baseline, 2026-09-23: `nq=17 nv=15 nu=3 nsensordata=30`,
 
 ---
 
+--  pull required specs where necissarry, before moving onto stage 2, make sure the stage 1 of this plan cleanly notes out
+      - sensor rates, noise, bias, etc
+      - domain randomization
+      - infastructure
+
 ## Suggested order
 
 1. §0 in full, with thrust clamped to 1.0 N and a rigid canopy — gets a training
    loop running against a model you already trust.
 2. §2 vectorization — make the loop fast enough to iterate.
-3. §1 brakes (model B) — this is the one that decides whether the learned policy
-   is about the real vehicle or about a tendon artifact.
 4. §3 sim-to-real, once a policy exists worth transferring.
