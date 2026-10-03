@@ -6,9 +6,10 @@ MuJoCo model of a 1 m PEEK paramotor, with a JAX/MJX port for PPO training.
 | --- | --- |
 | `model/` | Aircraft definition: XML generator, generated `paramotor.xml` / `scene.xml`, parameters, aerodynamics, control helpers, sensor spec |
 | `mjx/` | JAX/MJX simulation of the same model |
-| `rl/` | PPO environment, route generation, training, evaluation, analysis plots, `requirements-rl.txt` |
+| `rl/` | PPO environment, route generation, training, evaluation, per-run analysis, multi-run rliable comparison, `requirements-rl.txt` |
 | `viewer/` | Interactive MuJoCo viewer and the `view.sh` launcher |
 | `tests/` | Aero, reporting, and RL test suites |
+| `configs/` | Hyperparameter overrides (JSON) passed to training with `--config` |
 | `docker/` | GPU training image and `train.sh` (train + evaluate + analyze in one command) |
 | `data/flights/` | Logged viewer flights (odometry CSVs) |
 | `docs/` | `MODEL_NOTES.md`, `RL.md`, the model-alignment report, papers, images |
@@ -22,6 +23,8 @@ viewer/view.sh                           # open the interactive viewer
 python -m pytest                         # all tests
 python -m rl.train --smoke --output runs/smoke
 docker/train.sh --name first --updates 2000   # train + evaluate + plots in Docker -> runs/first/
+docker/train.sh --name base --seeds 5         # 5 seeds -> runs/base/seed0..4
+docker/train.sh --compare base high_lr        # rliable comparison -> runs/compare/
 ```
 
 See [docs/MODEL_NOTES.md](docs/MODEL_NOTES.md) for the model and

@@ -47,6 +47,9 @@ docker/train.sh --smoke                                  # ~1 min end-to-end che
 docker/train.sh --name first --num-envs 256 --updates 2000
 docker/train.sh --name first --resume --updates 1000     # continue the same run
 docker/train.sh --analyze first                          # re-plot, also mid-training
+docker/train.sh --name baseline --seeds 5 --updates 500  # runs/baseline/seed0..4
+docker/train.sh --name high_lr --seeds 5 --updates 500 --config configs/high_lr.json
+docker/train.sh --compare baseline high_lr               # rliable statistics + plots
 ```
 
 Options it does not recognise are passed to `python -m rl.train`. The steps it
@@ -310,3 +313,37 @@ each time the curriculum steps up, so judge progress against the difficulty
 trace, not reward alone. The gate flies only 10 s (250 steps) per seed, so a
 policy can pass it and still fail the 60 s evaluation flights. The evaluation
 is the real test.
+
+## Comparing configurations (rliable)
+
+One run per configuration is not enough to say one beats another: RL results
+vary a lot between seeds. Train each configuration with several seeds (5 is a
+reasonable minimum), then compare them with
+[rliable](https://github.com/google-research/rliable) (Agarwal et al.,
+NeurIPS 2021):
+
+```bash
+python -m rl.compare runs/baseline runs/high_lr        # or docker/train.sh --compare ...
+```
+
+Each run is scored per evaluation route as the distance flown along the route
+divided by what cruise speed covers in the evaluation window, so 1.0 means it
+flew the whole minute at speed without leaving the route. Routes are rliable's
+tasks. `runs/compare/<a>-vs-<b>/` then holds:
+
+- `aggregates.png`: IQM, median, mean and optimality gap, each with a 95%
+  stratified-bootstrap confidence interval. IQM (the mean of the middle 50% of
+  scores) is the headline number: robust to one lucky or crashed seed.
+- `improvement.png`: probability that configuration X beats Y on a random
+  route. A CI that excludes 0.5 is a real difference.
+- `profiles.png`: fraction of (run, route) scores above each threshold; a
+  curve that lies entirely above another dominates it.
+- `learning.png`: IQM across seeds of training reward, curriculum difficulty
+  and cross-track error against environment steps, i.e. how fast each improves.
+- `report.md`: all of the numbers, plus per-route means and the environment
+  steps each configuration needed to reach full difficulty.
+
+Evaluate every run with the same `rl.evaluate` settings (the defaults) so they
+fly identical routes; `rl.compare` refuses runs evaluated on different routes.
+Put hyperparameter changes in a JSON file under `configs/` and pass it with
+`--config`, so each configuration is recorded in its runs' `config.json`.

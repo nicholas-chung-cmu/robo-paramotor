@@ -9,6 +9,7 @@ os.environ.setdefault(
 )
 import argparse
 import csv
+import json
 import time
 
 import jax
@@ -220,6 +221,9 @@ def main():
             ]
         )
         writer.writerows(summary)
+    (args.output / "meta.json").write_text(json.dumps(
+        {"seconds": args.seconds, "episodes": args.episodes, "seed": args.seed,
+         "launch_speed": cfg.launch_speed, "checkpoint": str(args.checkpoint)}, indent=2))
     arcs = np.asarray(states.arc)
     with (args.output / "routes.csv").open("w", newline="") as f:
         writer = csv.writer(f)

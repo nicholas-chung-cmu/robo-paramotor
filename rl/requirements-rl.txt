@@ -7,3 +7,7 @@ flax==0.12.10
 optax==0.2.8
 pytest>=8,<10
 matplotlib==3.10.7
+# rliable (multi-run comparison). arch 7.2 breaks on pandas 3, so pin pandas 2.
+rliable==1.2.0
+arch==7.2.0
+pandas>=2.2,<3
