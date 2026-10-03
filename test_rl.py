@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import paths
+import sensor_spec
 from paramotor_aero import ParamotorAero
 from paramotor_control import smooth_brakes
 from paramotor_params import PEEK_1M
@@ -21,7 +22,9 @@ from train import advantages, log_probability
 @pytest.fixture(scope="module")
 def env():
     mujoco.set_mjcb_passive(None)
-    return ParamotorEnv(EnvConfig(episode_seconds=0.2, position_randomization_m=0.0))
+    # Noise off: these tests check timing and layout, not noise statistics.
+    return ParamotorEnv(EnvConfig(episode_seconds=0.2, position_randomization_m=0.0,
+                                  noise_std={}, bias_std={}))
 
 
 @pytest.fixture(scope="module")
@@ -150,7 +153,7 @@ def test_gps_hold_freshness_and_history(env, initial):
     np.testing.assert_allclose(s.sensors[env.gps_indices], 20.0)
     assert bool(s.gps_new) and float(s.gps_age) == 0.0
     np.testing.assert_allclose(s.history[-1, -2:], [0.0, 1.0])
-    assert s.history.shape == (100, env.m.nsensordata + 2)
+    assert s.history.shape == (25, env.frame_size)  # 1 s at history_hz = 25
     assert set(env.slices) == {env.m.sensor(i).name for i in range(env.m.nsensor)}
 
 
@@ -158,15 +161,10 @@ def test_noise_reproducibility_and_units(env, initial):
     old = env.noise
     try:
         env.noise = env._sensor_vector({"gyro": [0.1, 0.2, 0.3]})
-        one = env._corrupt(
-            initial.data.sensordata, jp.zeros(env.m.nsensordata), jax.random.PRNGKey(5)
-        )
-        two = env._corrupt(
-            initial.data.sensordata, jp.zeros(env.m.nsensordata), jax.random.PRNGKey(5)
-        )
-        other = env._corrupt(
-            initial.data.sensordata, jp.zeros(env.m.nsensordata), jax.random.PRNGKey(6)
-        )
+        zero = jp.zeros(env.n_error)
+        one = env._corrupt(initial.data.sensordata, zero, jax.random.PRNGKey(5))
+        two = env._corrupt(initial.data.sensordata, zero, jax.random.PRNGKey(5))
+        other = env._corrupt(initial.data.sensordata, zero, jax.random.PRNGKey(6))
         np.testing.assert_array_equal(one, two)
         assert not np.allclose(one[env.slices["gyro"]], other[env.slices["gyro"]])
         np.testing.assert_allclose(
@@ -244,3 +242,70 @@ def test_batched_step_and_time_limit(env):
         states.data.sensordata[:, env.gps_indices],
         atol=1e-5,
     )
+
+
+def test_sensor_csv_is_complete_and_sourced(env):
+    rows = sensor_spec.load()
+    observed = {n for n, r in rows.items() if r["observed"] == "yes"}
+    assert observed == set(env.channels)
+    for name in observed:
+        r = rows[name]
+        assert r["source"] and r["datasheet_noise"], name
+        assert float(r["noise_std"]) > 0, name
+        assert float(r["rate_hz"]) > 0, name
+    defaults = EnvConfig()
+    assert defaults.noise_std == sensor_spec.defaults("noise_std")
+    assert defaults.bias_std == sensor_spec.defaults("bias_std")
+    # The CSV's GNSS rate is the env's GNSS rate.
+    assert float(rows["gps_pos_xy"]["rate_hz"]) == defaults.gps_hz
+
+
+def test_observation_excludes_unmeasurable_channels(env, initial):
+    assert env.frame_size == 6 + 3 + 3 + 3 + 2 + 3 + 1 + 2 + 1 + 2
+    assert env.obs_size == 25 * env.frame_size + 15 + 5
+    # Perturbing channels the vehicle cannot measure must not change the frame.
+    truth = initial.data.sensordata
+    hidden = [i for n in ("vel_body", "pod_angvel", "brake_len_L", "brake_len_R")
+              for i in range(env.slices[n].start, env.slices[n].stop)]
+    hidden.append(env.slices["pod_pos"].start + 2)  # GNSS altitude
+    values = env._corrupt(truth, jp.zeros(env.n_error), jax.random.PRNGKey(0))
+    frame = env._frame(values, initial.origin, jp.zeros(()), jp.array(True))
+    moved = values.at[jp.array(hidden)].add(5.0)
+    np.testing.assert_array_equal(
+        frame, env._frame(moved, initial.origin, jp.zeros(()), jp.array(True)))
+
+
+def test_default_noise_statistics(initial):
+    env = ParamotorEnv(EnvConfig(episode_seconds=0.2))
+    truth = initial.data.sensordata
+    keys = jax.random.split(jax.random.PRNGKey(1), 4000)
+    zero = jp.zeros(env.n_error)
+    samples = jax.vmap(lambda k: env._corrupt(truth, zero, k))(keys)
+    rows = sensor_spec.load()
+    # White noise matches the CSV for additive channels.
+    for name, index in (("gyro", env.slices["gyro"].start),
+                        ("baro_alt", env.baro),
+                        ("gps_pos_xy", env.slices["pod_pos"].start)):
+        std = float(np.std(samples[:, index]))
+        np.testing.assert_allclose(std, float(rows[name]["noise_std"]), rtol=0.06)
+    # Attitude error: angle between true and measured quaternions.
+    q = truth[env.slices["pod_quat"]]
+    dots = np.abs(np.asarray(samples[:, env.slices["pod_quat"]]) @ np.asarray(q))
+    angle = 2 * np.arccos(np.clip(dots, -1, 1))
+    expected = np.sqrt(2 * float(rows["attitude_roll_pitch"]["noise_std"]) ** 2
+                       + float(rows["attitude_yaw"]["noise_std"]) ** 2)
+    np.testing.assert_allclose(np.sqrt(np.mean(angle**2)), expected, rtol=0.06)
+    # Per-episode bias is drawn at reset with the CSV's standard deviation.
+    biases = jax.vmap(lambda k: env.reset(k).bias)(jax.random.split(jax.random.PRNGKey(2), 400))
+    np.testing.assert_allclose(float(np.std(biases[:, env.baro])),
+                               float(rows["baro_alt"]["bias_std"]), rtol=0.15)
+
+
+def test_thrust_clamp_matches_xml(env):
+    assert env.cfg.thrust_max == 1.0
+    assert env.m.actuator_ctrlrange[env.physics.thrust, 1] == 1.0
+    with pytest.raises(ValueError):
+        ParamotorEnv(EnvConfig(thrust_max=1.1))
+    states = jax.jit(env.reset)(jax.random.PRNGKey(3))
+    states, *_ = jax.jit(env.step)(states, jp.array([1.0, -1.0, -1.0]))
+    assert float(states.data.ctrl[env.physics.thrust]) <= 1.0 + 1e-6

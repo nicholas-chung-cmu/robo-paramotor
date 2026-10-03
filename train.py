@@ -45,6 +45,7 @@ class PPOConfig:
 
 class ActorCritic(nn.Module):
     hidden_size: int = 128
+    thrust_bias: float = 0.693  # tanh(0.693) = 0.6 -> 0.8 N of a 1.0 N range
 
     @nn.compact
     def __call__(self, obs):
@@ -53,7 +54,7 @@ class ActorCritic(nn.Module):
             actor = nn.tanh(nn.Dense(self.hidden_size)(actor))
             critic = nn.tanh(nn.Dense(self.hidden_size)(critic))
         # Begin near cruise with mostly released brakes, not both brakes at 50%.
-        bias = lambda key, shape, dtype: jp.array([-0.06, -2.0, -2.0], dtype)
+        bias = lambda key, shape, dtype: jp.array([self.thrust_bias, -2.0, -2.0], dtype)
         mean = nn.Dense(
             3, kernel_init=nn.initializers.orthogonal(0.01), bias_init=bias
         )(actor)
@@ -325,7 +326,9 @@ def main():
         ap.error("output already has a checkpoint; use --resume or a new directory")
     print("Devices:", jax.devices(), flush=True)
     env = ParamotorEnv(ec)
-    network = ActorCritic(pc.hidden_size)
+    # Initial mean thrust = the env's initial thrust, wherever thrust_max sits.
+    thrust_bias = float(np.arctanh(np.clip(2 * ec.initial_thrust / ec.thrust_max - 1, -0.99, 0.99)))
+    network = ActorCritic(pc.hidden_size, thrust_bias)
     key = jax.random.PRNGKey(pc.seed)
     key, nk, rk = jax.random.split(key, 3)
     params = network.init(nk, jp.zeros(env.obs_size))

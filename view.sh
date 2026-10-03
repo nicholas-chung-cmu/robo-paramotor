@@ -13,7 +13,7 @@
 #   ./view.sh --bare       aircraft only, no ground or mountains
 #   ./view.sh --aero lumped  the paper's single-force model instead of strip
 #   ./view.sh --aero off     no aerodynamics at all (it just falls)
-#   ./view.sh --thrust 0.8   thrust in N; validated envelope is 0 to ~1.0 N
+#   ./view.sh --thrust 0.8   thrust in N; the XML caps it at 1.0 N (hardware clamp)
 #   ./view.sh --inertia    show the equivalent inertia boxes (mass, NOT drag)
 #   ./view.sh --build      regenerate paramotor.xml + scene.xml first
 #
