@@ -21,7 +21,7 @@ import jax.numpy as jp
 import numpy as np
 import optax
 
-from rl.rl_env import EnvConfig, ParamotorEnv
+from rl.rl_env import EnvConfig, ParamotorEnv, config_from_saved
 
 
 @dataclass
@@ -303,7 +303,7 @@ def main():
     args = ap.parse_args()
     saved = load_checkpoint(args.resume) if args.resume else None
     raw = json.loads(args.config.read_text()) if args.config else {}
-    ec = EnvConfig(**(saved["env"] if saved else raw.get("env", {})))
+    ec = config_from_saved(saved["env"]) if saved else EnvConfig(**raw.get("env", {}))
     pc = PPOConfig(**(saved["ppo"] if saved else raw.get("ppo", {})))
     for name in ("num_envs", "updates", "rollout_steps", "seed"):
         value = getattr(args, name)

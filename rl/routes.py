@@ -15,11 +15,13 @@ KINDS = (
 )
 
 
-def make_path(key, difficulty=1.0, kind="random", count=513, spacing=2.0):
+def make_path(key, difficulty=1.0, kind="random", count=101, spacing=10.0):
     """Integrate smooth curvature and grade; no sharp waypoint corners.
 
     Positive grade is a climb. Curriculum 0 is straight and level; horizontal
     curvature grows first, vertical variation starts above difficulty 0.5.
+    The default is ~1 km stored every 10 m; projection and preview interpolate
+    linearly between points.
     """
     s = jp.arange(count) * spacing
     phase = jax.random.uniform(key, (3,), minval=-jp.pi, maxval=jp.pi)

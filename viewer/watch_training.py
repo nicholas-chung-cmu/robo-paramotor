@@ -34,7 +34,7 @@ import numpy as np
 
 from model.paramotor_aero import ParamotorAero
 from model.paramotor_params import PEEK_1M
-from rl.rl_env import EnvConfig, ParamotorEnv
+from rl.rl_env import ParamotorEnv, config_from_saved
 from rl.train import ActorCritic, load_checkpoint
 
 ROUTE_RGBA = np.array([1.0, 0.65, 0.1, 1.0])
@@ -81,7 +81,7 @@ class Evaluator(threading.Thread):
         self.best_ever, self.best_dir = -np.inf, None
 
     def setup(self, saved):
-        cfg = EnvConfig(**saved["env"])
+        cfg = config_from_saved(saved["env"])
         cfg.episode_seconds = self.seconds
         key = (repr(saved["env"]), saved["ppo"]["hidden_size"])
         if key != self.env_key:  # rebuild (and recompile) only if the config changed

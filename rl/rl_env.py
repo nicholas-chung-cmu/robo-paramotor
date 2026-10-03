@@ -1,6 +1,7 @@
 """Batched-friendly MJX path following. No Gym wrappers or global callbacks."""
 
 from dataclasses import dataclass, field
+import math
 from typing import Any
 import jax
 import jax.numpy as jp
@@ -55,7 +56,9 @@ class EnvConfig:
     initial_thrust: float = 0.8
     launch_speed: float = 6.0
     altitude: float = 40.0
-    preview_m: tuple = (5.0, 10.0, 20.0, 40.0, 60.0)
+    preview_m: tuple = (20.0, 40.0, 80.0)  # look-ahead points along the route
+    route_points: int = 101  # route stored as route_points, route_spacing_m apart (~1 km)
+    route_spacing_m: float = 10.0
     path_kind: str = "random"
     curriculum: bool = True
     # Datasheet values from sensors.csv, keyed by its channel names.
@@ -69,6 +72,15 @@ class EnvConfig:
     envelope_grace_s: float = 1.0
     solver_iterations: int = 10
     solver_ls_iterations: int = 5
+
+
+# Checkpoints saved before the route fields existed trained on 513 points 2 m apart.
+LEGACY_ROUTE = {"route_points": 513, "route_spacing_m": 2.0}
+
+
+def config_from_saved(env):
+    """EnvConfig from a checkpoint's saved env dict, filling fields it predates."""
+    return EnvConfig(**{**LEGACY_ROUTE, **env})
 
 
 @struct.dataclass
@@ -141,6 +153,12 @@ class ParamotorEnv:
             raise ValueError(
                 "Initial thrust must be in range and launch_speed must be positive"
             )
+        if c.route_points < 2 or c.route_spacing_m <= 0:
+            raise ValueError("A route needs at least two points and positive spacing")
+        # Projection searches a fixed distance around the last match (about
+        # 6 m back, 24 m ahead), whatever the route's point spacing.
+        self.project_back = max(1, math.ceil(6.0 / c.route_spacing_m))
+        self.project_ahead = max(1, math.ceil(24.0 / c.route_spacing_m))
         if not c.preview_m or any(x <= 0 for x in c.preview_m):
             raise ValueError("Preview distances must be positive")
         if c.position_randomization_m < 0 or c.envelope_grace_s < 0:
@@ -194,6 +212,10 @@ class ParamotorEnv:
         self.launch = jax.jit(lambda: self.physics.initial(
             c.launch_speed, c.altitude, c.initial_thrust))()
 
+    def route(self, key, difficulty, kind):
+        """A route at this config's point count and spacing."""
+        return routes.make_path(key, difficulty, kind, self.cfg.route_points, self.cfg.route_spacing_m)
+
     def _sensor_vector(self, mapping):
         unknown = set(mapping) - set(self.channels)
         if unknown:
@@ -230,7 +252,8 @@ class ParamotorEnv:
         quat = state.sensors[self.slices["pod_quat"]]
         w, x, y, z = quat
         yaw = jp.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-        i, s, _, _ = routes.project(state.points, state.arc, pos, state.observed_index)
+        i, s, _, _ = routes.project(state.points, state.arc, pos, state.observed_index,
+                                    self.project_back, self.project_ahead)
         goals = (
             routes.preview(state.points, state.arc, s, jp.array(self.cfg.preview_m))
             - pos
@@ -245,7 +268,7 @@ class ParamotorEnv:
 
     def reset(self, key, difficulty=0.0):
         key, pk, nk, bk = jax.random.split(key, 4)
-        points, arc = routes.make_path(pk, difficulty, self.cfg.path_kind)
+        points, arc = self.route(pk, difficulty, self.cfg.path_kind)
         data = self.launch
         origin = data.site_xpos[self.m.site("pod_com").id]
         points = points + origin
@@ -378,7 +401,8 @@ class ParamotorEnv:
         data = state.data  # the last substep always refreshed the sensors
         pos = data.site_xpos[self.m.site("pod_com").id]
         index, progress, closest, tangent = routes.project(
-            state.points, state.arc, pos, state.path_index
+            state.points, state.arc, pos, state.path_index,
+            self.project_back, self.project_ahead,
         )
         error = pos - closest
         lateral = jp.linalg.norm(error[:2])

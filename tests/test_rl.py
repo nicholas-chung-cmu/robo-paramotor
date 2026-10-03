@@ -112,18 +112,19 @@ def test_random_path_limits_and_projection():
     grade = delta[:, 2] / horizontal
     heading = np.unwrap(np.arctan2(delta[:, 1], delta[:, 0]))
     assert abs(grade).max() <= 0.10001
-    assert abs(np.diff(heading) / 2).max() <= 0.04001
-    np.testing.assert_allclose(horizontal, 2.0, atol=1e-4)
+    spacing = float(arc[1] - arc[0])
+    assert abs(np.diff(heading) / spacing).max() <= 0.04001
+    np.testing.assert_allclose(horizontal, spacing, atol=1e-3)
     straight, s = routes.make_path(jax.random.PRNGKey(0), kind="straight")
     i, progress, closest, tangent = routes.project(
-        straight, s, jp.array([11.0, 3.0, -2.0]), 4
+        straight, s, jp.array([31.0, 3.0, -2.0]), 2
     )
-    assert int(i) == 5
-    np.testing.assert_allclose(progress, 11.0)
-    np.testing.assert_allclose(closest, [11.0, 0.0, 0.0])
+    assert int(i) == 3  # segment 30-40 m
+    np.testing.assert_allclose(progress, 31.0)
+    np.testing.assert_allclose(closest, [31.0, 0.0, 0.0])
     np.testing.assert_allclose(tangent, [1.0, 0.0, 0.0])
     np.testing.assert_allclose(
-        routes.preview(straight, s, progress, jp.array([5.0, 10.0]))[:, 0], [16.0, 21.0]
+        routes.preview(straight, s, progress, jp.array([20.0, 40.0]))[:, 0], [51.0, 71.0]
     )
 
 
@@ -131,8 +132,9 @@ def test_figure_eight_projection_stays_on_current_branch():
     p, arc = routes.make_path(jax.random.PRNGKey(0), kind="figure_eight")
     index, progress, _, _ = routes.project(p, arc, jp.zeros(3), 0)
     assert int(index) == 0 and float(progress) == 0
-    index, progress, _, _ = routes.project(p, arc, jp.zeros(3), 90)
-    assert 87 <= int(index) <= 102 and float(progress) > 100
+    # Back at the crossing (~188 m along), a search near index 18 stays there.
+    index, progress, _, _ = routes.project(p, arc, jp.zeros(3), 18)
+    assert 17 <= int(index) <= 21 and float(progress) > 100
 
 
 def test_gps_hold_freshness_and_history(env, initial):
@@ -284,7 +286,7 @@ def test_barometer_holds_between_samples(env, initial):
 
 def test_observation_excludes_unmeasurable_channels(env, initial):
     assert env.frame_size == 6 + 3 + 3 + 3 + 2 + 3 + 1 + 2 + 1 + 2
-    assert env.obs_size == 25 * env.frame_size + 15 + 5
+    assert env.obs_size == 25 * env.frame_size + 3 * len(env.cfg.preview_m) + 5
     # Perturbing channels the vehicle cannot measure must not change the frame.
     truth = initial.data.sensordata
     hidden = [i for n in ("vel_body", "pod_angvel", "brake_len_L", "brake_len_R")

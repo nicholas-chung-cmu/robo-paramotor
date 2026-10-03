@@ -238,8 +238,13 @@ sensors), and GNSS altitude (no published vertical accuracy; the barometer
 replaces it). Battery voltage and current are on the BOM but not modelled.
 
 Sensors are sampled at 100 Hz. The policy receives one frame every 40 ms
-(`history_hz = 25`) for the last second, plus five route preview points and the
-previous action/filter velocity: 670 inputs with the defaults. History is filled
+(`history_hz = 25`) for the last second, plus three route preview points (20, 40
+and 80 m ahead along the route, relative to the vehicle and divided by their
+distance) and the previous action/filter velocity: 664 inputs with the defaults.
+Routes are ~1 km, stored as 101 points 10 m apart (`route_points`,
+`route_spacing_m`); projection and preview interpolate linearly between them.
+Checkpoints saved before these fields existed load with their original 513
+points 2 m apart. History is filled
 with the first reading at reset. The network has separate actor and critic MLPs,
 each with two 128-unit tanh layers. It has no recurrent state.
 

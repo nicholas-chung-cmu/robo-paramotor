@@ -31,7 +31,7 @@ import numpy as np
 from tqdm import tqdm
 
 from rl import routes
-from rl.rl_env import EnvConfig, ParamotorEnv
+from rl.rl_env import ParamotorEnv, config_from_saved
 from rl.train import ActorCritic, load_checkpoint
 
 COLUMNS = [
@@ -202,7 +202,7 @@ def main():
     for c, s in zip(args.checkpoints[1:], saved[1:]):
         if s["env"] != saved[0]["env"] or s["ppo"]["hidden_size"] != saved[0]["ppo"]["hidden_size"]:
             ap.error(f"{c} has a different env config or network size; evaluate it separately")
-    cfg = EnvConfig(**saved[0]["env"])
+    cfg = config_from_saved(saved[0]["env"])
     cfg.episode_seconds = args.seconds
     env = ParamotorEnv(cfg)
     network = ActorCritic(saved[0]["ppo"]["hidden_size"])
@@ -214,7 +214,7 @@ def main():
     seeds = [args.seed + i for _ in kinds for i in range(args.episodes)]
     keys = jp.stack([jax.random.PRNGKey(seed) for seed in seeds])
     states = jax.jit(jax.vmap(env.reset, in_axes=(0, None)))(keys, 1.0)
-    tracks = [routes.make_path(key, 1.0, name) for key, name in zip(keys, names)]
+    tracks = [env.route(key, 1.0, name) for key, name in zip(keys, names)]
     points = jp.stack([p for p, _ in tracks]) + states.origin[:, None, :]
     states = states.replace(points=points, arc=jp.stack([a for _, a in tracks]))
     states = jax.vmap(env._observation)(states)

@@ -56,7 +56,7 @@ Each item says why it matters and how to tell it is done.
 - [ ] **Lengthen the curriculum gate**, or add a longer check. It flies only
       10 s, so a policy can pass it and still fail 60 s flights by sinking or
       drifting.
-- [ ] **Make route completion reachable.** Evaluation routes are ~1,024 m,
+- [ ] **Make route completion reachable.** Evaluation routes are ~1,000 m,
       but a 60 s flight at 6 m/s covers ~360 m, so `completed` is always 0.
       Either shorten the routes or lengthen the flights.
 
