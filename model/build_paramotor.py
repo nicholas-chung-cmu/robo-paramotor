@@ -21,6 +21,10 @@ import re
 import sys
 from pathlib import Path
 
+import numpy as np
+
+from model.paramotor_aero import canopy_topology, triangle_areas
+
 HERE = Path(__file__).parent
 
 # ----------------------------------------------------------------------------
@@ -28,11 +32,10 @@ HERE = Path(__file__).parent
 # ----------------------------------------------------------------------------
 G = 1e-3  # gram -> kg
 
-# Number of spanwise canopy strips. The deformable skin has a spanwise vertex
-# row at both tips and at each strip centre (N_PANEL + 2 rows), so the line
-# stations, which sit at strip centres, land on vertices. The mass table, the
-# arc geometry, the line stations and the brake anchors all scale from it.
-N_PANEL = 14
+# Spanwise vertex rows of the double-skin canopy, evenly spaced along the arch,
+# both tips included. Every row carries a rib; the line stations and brake
+# anchors are rows.
+N_SPAN = 16
 
 M = {
     # --- one merged avionics PCB: 10+30+1.7+3+7.3+2.2+7+4+3 = 68.2 g ---
@@ -46,28 +49,18 @@ M = {
     "prop":        5.0,
     "servo":      11.8,   # each, x2  = 23.6
     "arm":         2.0,   # servo arm/horn, each, x2
-    # Canopy: 65 g of 125 um PEEK skin PLUS the 3 g canopy half of the 6 g line
-    # allowance, split N_PANEL ways (then spread over the skin's vertices by
-    # tributary area, see vertex_masses()).
-    #
-    # The 3 g used to be eight separate "line-termination tab" geoms, one per
-    # suspension station. They were deleted: NO TENDON EVER ATTACHED TO THEM.
-    # The suspension lines terminate on the att_A_* / att_C_* sites, which live
-    # on the panel bodies, so the tabs were pure mass sitting near - but not on
-    # - the attachment points, and not on the load path at all.
-    #
-    # The mass is real hardware and is kept, just carried by the panels. Cost
-    # of the move, measured: canopy Ixx -0.4%, Iyy -0.3%, Izz -0.4%. The tabs
-    # sat at roughly the canopy's own radius of gyration, so spreading them
-    # over fourteen panels instead of eight stations barely moves the tensor.
-    # (Deleting the mass outright would have cost 4.5% of Ixx and broken the
-    # 325.40 g BOM total, which the suite asserts.)
-    "panel":      (65.0 + 3.0) / N_PANEL,
+    # Canopy: the 65 g skin allowance (both skins and the ribs, see
+    # FABRIC_AREAL below) PLUS the 3 g canopy half of the 6 g line allowance,
+    # spread over the vertices by tributary fabric area (vertex_masses()).
+    # Keeping the line mass here keeps the 325.40 g BOM total, which the suite
+    # asserts.
+    "fabric":     65.0,
+    "line_half":   3.0,
 }
 
 BOM_TOTAL_G = (
     M["airframe"] + M["battery"] + M["motor"] + M["prop"]
-    + 2 * M["servo"] + 2 * M["arm"] + N_PANEL * M["panel"]
+    + 2 * M["servo"] + 2 * M["arm"] + M["fabric"] + M["line_half"]
 )
 
 # ----------------------------------------------------------------------------
@@ -88,8 +81,6 @@ CHORD = S_FLAT / SPAN_FLAT               # 0.196 m constant chord
 # number. A real tapered wing keeps more area (Spyder 3: 17.2/20 = 0.86)
 # because the tips are less arched and narrower than a constant-chord panel.
 PROJ_FRACTION = 0.797
-SKIN_T = 125e-6                          # m, PEEK thickness (real)
-SKIN_T_DRAW = 1.0e-3                     # m, drawn thickness (renderable); mass is set explicitly
 
 # Solve the arch: arc length = SPAN_FLAT, chord-of-arc = PROJ_FRACTION * SPAN_FLAT
 #   2R sin(phi) = 0.8 * b   and   2R phi = b     =>   sin(phi)/phi = 0.8
@@ -127,24 +118,80 @@ SERVO_Z = 0.052
 # same one: it has no C_L0, no C_Lalpha and no rate derivatives. Aero now lives in
 # paramotor_aero.py; the coefficients are in paramotor_params.py.
 
-# DEFORMABLE SKIN. The canopy is a MuJoCo flex shell (dim=2) over a grid of
-# point-mass vertices, not a rigid body. Material is the real skin:
-#   PEEK E = 3.6 GPa, t = 125 um, nu = 0.4,  D = E t^3 / 12(1-nu^2) ~ 7e-4 N.m.
-# Bending uses that plate stiffness (elastic2d="bend"); a 125 um film is nearly
-# limp, so the wing holds its shape through line tension and air load, as a
-# real single-skin wing does. In-plane the film is effectively inextensible at
-# these loads (Et = 4.5e5 N/m, strain ~1e-4), so stretch is a flex equality
-# constraint on every edge rather than a spring: a 4.5e5 N/m spring on sub-gram
-# vertices would need a timestep around 0.05 ms to stay stable.
-PEEK_E, PEEK_T, PEEK_NU = 3.6e9, 125e-6, 0.4
-PLATE_D = PEEK_E * PEEK_T**3 / (12 * (1 - PEEK_NU**2))
-FLEX_SOLREF = "0.004 1"       # edge-length constraint: stiff, critically damped
-# Chordwise vertex stations, canopy frame, leading edge first. They include the
-# A and B line rows, so attachments land on vertices. The C (anti-flap) row
-# attaches at the trailing-edge vertex.
-CHORD_STATIONS = (CHORD / 2, 0.060, 0.0, -0.060, TE_X)
-TE_INDEX = len(CHORD_STATIONS) - 1
+# "FAKE HOLLOW" CANOPY. A single 125 um PEEK skin folds chordwise in free
+# flight (docs/MODEL_NOTES.md section 7): its bending stiffness is far too low.
+# A real paraglider is a double skin held in shape by internal pressure. This
+# model does not simulate the air. It meshes the SHAPE the inflated wing takes
+# as a solid, gives it the stiffness the double skin would have, and gives its
+# vertices the mass of the hollow skins and ribs (vertex_masses()).
+#
+# SECTION. Symmetric NACA 4-digit thickness about the old single skin, which
+# becomes the mean (camber) surface: the aerodynamic reference, its area and its
+# arch are unchanged, so every coefficient carries over. Upper and lower
+# surfaces share the leading- and trailing-edge vertices.
+THICKNESS = 0.15              # t/c; paraglider sections run about 12-17%
+# Chord stations, fractions of chord from the leading edge: the old skin's, so
+# the A and B line rows stay where they were.
+A_FRAC = 0.5 - 0.060 / CHORD  # 0.194
+B_FRAC = 0.5 + 0.060 / CHORD  # 0.806
+
+
+def chord_fractions():
+    return (0.0, A_FRAC, 0.5, B_FRAC, 1.0)
+
+
+N_CHORDWISE = 5
+TE_INDEX = N_CHORDWISE - 1
 ROW_INDEX = {"A": 1, "B": 3, "C": TE_INDEX}
+
+
+def half_thickness(f: float) -> float:
+    """NACA 4-digit half-thickness at chord fraction f (closed trailing edge)."""
+    return 5 * THICKNESS * CHORD * (0.2969 * math.sqrt(f) - 0.1260 * f
+                                    - 0.3516 * f**2 + 0.2843 * f**3 - 0.1036 * f**4)
+
+
+# MASS. PEEK film, 1320 kg/m^3. A real double skin's upper and lower skins and
+# one rib per span row share the 65 g fabric allowance, so the film is whatever
+# thickness fits it (about 120 um). Each vertex carries the mass of the fabric
+# around it, so mass, mass centre and inertia are those of the HOLLOW wing.
+PEEK_E, PEEK_RHO = 3.6e9, 1320.0
+#
+# STIFFNESS. In a pressurized double skin the two skins are the faces of a
+# sandwich: tension, not the film's own plate stiffness, carries bending, and
+# EI per unit width = E t h^2 / 2 for faces of thickness t a depth h apart
+# (sandwich_ei()). For this film that is ~10^2 N.m at the thickest section:
+# effectively rigid against air loads of a few newtons. The model gets the same
+# mechanism from geometry. The solid between the leading edge and the last
+# lower-surface station is a tetrahedral flex whose every edge length is an
+# equality constraint. Edges along the upper and lower surfaces act as the
+# inextensible faces, so bending stiffness scales with depth squared, as in the
+# sandwich. Constraints are solved implicitly, so this stays stable at the
+# 0.5 ms timestep, where a 3-D elastic flex at the equivalent modulus
+# (E_eff = 6 E t / h ~ 1e8 Pa) would need about 0.03 ms. FLEX_SOLREF sets how
+# closely "rigid" is met; the residual compliance is reported by main().
+FLEX_SOLREF = "0.004 1"       # edge-length constraint: stiff, critically damped
+#
+# BRAKE FLAP. The bay from the last lower-surface station to the trailing edge
+# is NOT solid. Its upper surface is an inextensible membrane (a 2-D flex
+# without bending), and its lower surface a tension-only tendon per row. A real
+# double skin behaves the same way there. Pulling the trailing edge down
+# wrinkles the lower skin (the tendon goes slack) and the flap deflects, while
+# lift cannot push it up past the design section (the tendon goes taut). A solid
+# trailing edge would leave the brakes nothing to deflect.
+
+
+def fabric_thickness() -> float:
+    """PEEK film thickness that puts both skins and every rib in 65 g."""
+    return M["fabric"] * G / (PEEK_RHO * fabric_area())
+
+
+def sandwich_ei() -> float:
+    """Bending stiffness per unit width of the double skin at its thickest
+    section, E t h^2 / 2 (N.m)."""
+    h = 2 * max(half_thickness(f / 100) for f in range(101))
+    return PEEK_E * fabric_thickness() * h * h / 2
+
 
 # Scenery. Purely visual: contype/conaffinity are 0, so there is no ground
 # contact and the dynamics are identical with or without it.
@@ -244,31 +291,29 @@ POD_HP = {
 # A (front) and B (rear) rows are CHORD_STATIONS[1] and [3]. The C row is an
 # anti-flap line at the trailing edge, on the INBOARD stations.
 # Spanwise stations that carry suspension lines, given as span fractions so they
-# stay put when N_PANEL changes. 0.5 is the centre; these bracket it symmetrically.
+# stay put when N_SPAN changes. 0.5 is the centre; these bracket it symmetrically.
 #
 # EVENLY SPACED, chosen against the measured spanwise load distribution rather
 # than by eye.
 #
 LINE_FRACTIONS = (0.18, 0.32, 0.46, 0.54, 0.68, 0.82)
-# The brake anchors sit on the tip panels, so those panels MUST carry lines of
-# their own: otherwise the tip is unsupported exactly where the brake load goes
-# in and it simply gets yanked. Real wings run tip ("stabilo") lines for this.
-TIP_PANELS = {0, N_PANEL - 1}
-LINE_PANELS = sorted({min(N_PANEL - 1, max(0, int(round(f * N_PANEL - 0.5))))
-                      for f in LINE_FRACTIONS} | TIP_PANELS)
+# The brake anchors sit on the tip rows, so the rows next to them MUST carry
+# lines of their own: otherwise the tip is unsupported exactly where the brake
+# load goes in and it simply gets yanked. Real wings run tip ("stabilo") lines
+# for this.
+LINE_ROWS = sorted({round(f * (N_SPAN - 1)) for f in LINE_FRACTIONS} | {1, N_SPAN - 2})
 # The C row goes only on the inboard stations: the brakes pull the tips, so the
 # centre trailing edge is the part left unsupported there.
-C_PANELS = [i for i in LINE_PANELS
-            if abs((i + 0.5) / N_PANEL - 0.5) < 0.25]
+C_ROWS = [r for r in LINE_ROWS if abs(r / (N_SPAN - 1) - 0.5) < 0.25]
 
 
-def station_rows(i):
-    return ("C",) if i in C_PANELS else ("A",)
+def station_rows(r):
+    return ("C",) if r in C_ROWS else ("A",)
 
 
-def panel_phi(i: int) -> float:
-    """Arc angle of the centre of panel i (negative = right wing)."""
-    return THETA * ((i + 0.5) / N_PANEL - 0.5)
+def row_phi(r: int) -> float:
+    """Arc angle of span row r (negative = right wing)."""
+    return THETA * (r / (N_SPAN - 1) - 0.5)
 
 
 def arc_pos(phi: float):
@@ -276,61 +321,72 @@ def arc_pos(phi: float):
     return 0.0, R_ARC * math.sin(phi), R_ARC * math.cos(phi) - R_ARC
 
 
-def span_phis():
-    """Arc angle of each spanwise vertex row: both tips and every strip centre.
-
-    Row 0 is the right tip (negative y); the last row is the left tip.
-    """
-    return [-THETA / 2] + [panel_phi(i) for i in range(N_PANEL)] + [THETA / 2]
-
-
-N_SPAN = N_PANEL + 2
-N_CHORDWISE = len(CHORD_STATIONS)
+def vertex_pos(skin: str, s: int, c: int):
+    """World position of a vertex at qpos0: surface "u" or "l", span row s,
+    chord station c. Thickness is laid off along the arch's outward normal."""
+    phi = row_phi(s)
+    _, y, z = arc_pos(phi)
+    f = chord_fractions()[c]
+    h = half_thickness(f) * (1.0 if skin == "u" else -1.0)
+    return (CHORD / 2 - f * CHORD, y + h * math.sin(phi), Z_CANOPY + z + h * math.cos(phi))
 
 
-def vertex_pos(s: int, c: int):
-    """World position of skin vertex (spanwise row s, chord station c) at qpos0."""
-    _, y, z = arc_pos(span_phis()[s])
-    return CHORD_STATIONS[c], y, Z_CANOPY + z
+def vname(skin: str, s: int, c: int) -> str:
+    """Body (and site) of a vertex. The lower surface's leading and trailing
+    edges ARE the upper surface's."""
+    if skin == "l" and c in (0, TE_INDEX):
+        skin = "u"
+    return f"cv{skin}_{s:02d}_{c}"
 
 
-def vname(s: int, c: int) -> str:
-    return f"cv_{s:02d}_{c}"
+def vertex_list():
+    """(skin, s, c) of every vertex body, in paramotor_aero.canopy_topology order."""
+    topo = canopy_topology(N_SPAN, N_CHORDWISE)
+    flat = [None] * (N_SPAN * (2 * N_CHORDWISE - 2))
+    for s in range(N_SPAN):
+        for c in range(N_CHORDWISE):
+            flat[topo["upper"][s, c]] = ("u", s, c)
+        for c in range(1, TE_INDEX):
+            flat[topo["lower"][s, c]] = ("l", s, c)
+    return flat
 
 
-def station_vertex(i: int, row: str):
-    """Vertex carrying the line of strip i, row A/B/C."""
-    return i + 1, ROW_INDEX[row]
+def vertex_positions():
+    return np.array([vertex_pos(*v) for v in vertex_list()])
+
+
+def station_vertex(r: int, row: str):
+    """Vertex carrying the line of span row r, line row A/B/C: the lower
+    surface, as on a real wing."""
+    return "l", r, ROW_INDEX[row]
 
 
 # Brakes pull the trailing edge at the OUTBOARD tip, one per side.
-BRAKE_VERTEX = {"L": (N_SPAN - 1, TE_INDEX), "R": (0, TE_INDEX)}
+BRAKE_VERTEX = {"L": ("u", N_SPAN - 1, TE_INDEX), "R": ("u", 0, TE_INDEX)}
 
 
-def _tributary(u):
-    """Half the distance to each neighbour: the length a station represents."""
-    u = list(u)
-    return [((u[min(k + 1, len(u) - 1)] - u[max(k - 1, 0)]) / 2) for k in range(len(u))]
+def fabric_area() -> float:
+    """Area of both skins and every rib, design shape (m^2)."""
+    P, topo = vertex_positions(), canopy_topology(N_SPAN, N_CHORDWISE)
+    tris = np.concatenate([topo[k] for k in ("upper_tris", "lower_tris", "rib_tris")])
+    return float(np.linalg.norm(triangle_areas(P, tris), axis=1).sum())
 
 
 def vertex_masses():
-    """Skin mass per vertex (kg), by tributary area; sums to the canopy total."""
-    ws = _tributary([R_ARC * phi for phi in span_phis()])
-    wc = _tributary([-x for x in CHORD_STATIONS])
-    total = N_PANEL * M["panel"] * G
-    norm = sum(ws) * sum(wc)
-    return [[total * ws[s] * wc[c] / norm for c in range(N_CHORDWISE)]
+    """Canopy mass per vertex (kg), in vertex_list() order: each fabric
+    triangle's area split over its corners, scaled to the canopy total."""
+    P, topo = vertex_positions(), canopy_topology(N_SPAN, N_CHORDWISE)
+    tris = np.concatenate([topo[k] for k in ("upper_tris", "lower_tris", "rib_tris")])
+    a = np.linalg.norm(triangle_areas(P, tris), axis=1)
+    w = np.zeros(len(P))
+    np.add.at(w, tris.ravel(), np.repeat(a / 3, 3))
+    return w * (M["fabric"] + M["line_half"]) * G / w.sum()
+
+
+def flap_tendons():
+    """(name, vertex a, vertex b): the brake flap's lower surface, one per row."""
+    return [(f"flap{s:02d}", ("l", s, TE_INDEX - 1), ("u", s, TE_INDEX))
             for s in range(N_SPAN)]
-
-
-def skin_elements():
-    """Two triangles per grid cell, wound so the normal points up (+z)."""
-    tri = []
-    for s in range(N_SPAN - 1):
-        for c in range(N_CHORDWISE - 1):
-            a, b = s * N_CHORDWISE + c, (s + 1) * N_CHORDWISE + c
-            tri += [a, a + 1, b, b, a + 1, b + 1]
-    return tri
 
 
 def arm_euler(side: str, sgn: float) -> float:
@@ -352,19 +408,21 @@ def arm_tip(sgn: float):
 
 
 def rest_lengths() -> dict:
-    """Rigged length of every line, computed from geometry in the design pose.
+    """Rigged length of every line and flap tendon, from the design pose.
 
     A rigged length is a property of the airframe as built, so it is plain
-    3-D distance between the two ends. 
+    3-D distance between the two ends.
     """
     out = {}
-    for i in LINE_PANELS:
-        side = "l" if panel_phi(i) > 0 else "r"
-        for row in station_rows(i):
+    for r in LINE_ROWS:
+        side = "l" if row_phi(r) > 0 else "r"
+        for row in station_rows(r):
             hp = {"A": "f", "B": "r", "C": "c"}[row] + side
-            out[f"line_{row}{i}"] = math.dist(POD_HP[hp], vertex_pos(*station_vertex(i, row)))
+            out[f"line_{row}{r}"] = math.dist(POD_HP[hp], vertex_pos(*station_vertex(r, row)))
     for side, sgn in (("L", 1.0), ("R", -1.0)):
         out[f"brake_{side}"] = math.dist(arm_tip(sgn), vertex_pos(*BRAKE_VERTEX[side])) + BRAKE_FREE
+    for name, u, v in flap_tendons():
+        out[name] = math.dist(vertex_pos(*u), vertex_pos(*v))
     return out
 
 
@@ -383,7 +441,7 @@ def build(tendon_ranges: dict | None = None, servo_mode: str = "position",
     A('  <option timestep="0.0005" integrator="Euler" density="0" viscosity="0">')
     A('    <flag multiccd="disable"/>')
     A('  </option>')
-    A('  <size njmax="500" nconmax="200"/>')
+    A('  <size njmax="1500" nconmax="200"/>')
     A('')
     A('  <default>')
     A('    <geom contype="0" conaffinity="0" friction="0.6 0.005 0.0001"/>')
@@ -413,6 +471,10 @@ def build(tendon_ranges: dict | None = None, servo_mode: str = "position",
     A('    <default class="line">')
     A(f'      <tendon width="{W_LINE}" rgba="0.10 0.95 1.00 1" limited="true"')
     A('              solreflimit="0.006 1" solimplimit="0.95 0.99 0.001"/>')
+    A('    </default>')
+    A('    <default class="flap">')
+    A('      <tendon width="0.0008" rgba="0.75 0.55 0.20 0.8" limited="true"')
+    A('              solreflimit="0.004 1" solimplimit="0.95 0.99 0.001"/>')
     A('    </default>')
     A('    <default class="brake">')
     A(f'      <tendon width="{W_BRAKE}" rgba="1.00 0.15 0.10 1" limited="true"')
@@ -506,59 +568,76 @@ def build(tendon_ranges: dict | None = None, servo_mode: str = "position",
     A('')
 
     # ---------------- CANOPY ----------------
+    topo = canopy_topology(N_SPAN, N_CHORDWISE)
+    verts = vertex_list()
     A('    <!-- ============================ CANOPY ============================= -->')
-    A(f'    <!-- Deformable single skin: {N_SPAN} x {N_CHORDWISE} point-mass vertices (spanwise rows at both tips and every strip centre; chord stations LE, A row, mid, B row, TE), each free to translate on three world-axis slides. The flex shell below spans them. Vertex masses are the 68 g skin split by tributary area. -->')
+    A(f'    <!-- "Fake hollow" deformable canopy: the inflated double-skin shape ({THICKNESS:.0%} thick) as a solid, {N_SPAN} span rows; upper surface {N_CHORDWISE} chord stations leading edge to trailing edge, lower surface {N_CHORDWISE - 2}, sharing both edges. Every vertex is a point mass free to translate on three world-axis slides; the flexes below span them. The {M["fabric"] + M["line_half"]:.0f} g canopy (both skins, ribs, line allowance) is split by tributary fabric area, so mass and inertia are the hollow wing\'s. -->')
     masses = vertex_masses()
-    for s_ in range(N_SPAN):
-        for c in range(N_CHORDWISE):
-            x, y, z = vertex_pos(s_, c)
-            n = vname(s_, c)
-            A(f'    <body name="{n}" pos="{x:.6f} {y:.6f} {z:.6f}">')
-            for ax, vec in (("x", "1 0 0"), ("y", "0 1 0"), ("z", "0 0 1")):
-                A(f'      <joint name="{n}_{ax}" type="slide" axis="{vec}"/>')
-            A(f'      <inertial pos="0 0 0" mass="{masses[s_][c]:.8f}" diaginertia="1e-10 1e-10 1e-10"/>')
-            A(f'      <site name="{n}" size="0.002" rgba="1 1 0 0.6"/>')
-            A('    </body>')
+    for v, mass in zip(verts, masses):
+        x, y, z = vertex_pos(*v)
+        n = vname(*v)
+        A(f'    <body name="{n}" pos="{x:.6f} {y:.6f} {z:.6f}">')
+        for ax, vec in (("x", "1 0 0"), ("y", "0 1 0"), ("z", "0 0 1")):
+            A(f'      <joint name="{n}_{ax}" type="slide" axis="{vec}"/>')
+        A(f'      <inertial pos="0 0 0" mass="{mass:.8f}" diaginertia="1e-10 1e-10 1e-10"/>')
+        A(f'      <site name="{n}" size="0.002" rgba="1 1 0 0.6"/>')
+        A('    </body>')
     A('  </worldbody>')
     A('')
     A('  <deformable>')
-    A(f'    <!-- PEEK skin: bending from plate stiffness D = E t^3/12(1-nu^2) = {PLATE_D:.2e} N.m; stretch is the flex equality below (inextensible film). No contact or self-collision (MuJoCo Warp has no flex self-collision). -->')
-    bodies = " ".join(vname(s_, c) for s_ in range(N_SPAN) for c in range(N_CHORDWISE))
-    A(f'    <flex name="canopy" dim="2" radius="0.0005" rgba="0.85 0.72 0.25 0.7"')
-    A(f'          body="{bodies}"')
-    A(f'          vertex="{" ".join(["0 0 0"] * (N_SPAN * N_CHORDWISE))}"')
-    A(f'          element="{" ".join(map(str, skin_elements()))}">')
-    A('      <contact contype="0" conaffinity="0" selfcollide="none"/>')
-    A(f'      <elasticity young="{PEEK_E:.3e}" poisson="{PEEK_NU}" thickness="{PEEK_T:.3e}" elastic2d="bend"/>')
-    A('    </flex>')
+    A('    <!-- Stiffness of the double skin from edge-length equalities (see build_paramotor.py): canopy_solid is the leading edge to the last lower-surface station, canopy_flap the upper surface of the brake flap. No bending, contact or self-collision. -->')
+    tets = topo["tets"].copy()
+    P0 = vertex_positions()
+    a_, b_, c_, d_ = (P0[tets[:, k]] for k in range(4))
+    neg = np.einsum("ij,ij->i", np.cross(b_ - a_, c_ - a_), d_ - a_) < 0
+    tets[neg, 1], tets[neg, 2] = tets[neg, 2], tets[neg, 1].copy()
+    flap = topo["upper_tris"].reshape(N_SPAN - 1, N_CHORDWISE - 1, 2, 3)[:, -1].reshape(-1, 3)
+    for name, dim, elems, rgba in (("canopy_solid", 3, tets, "0.85 0.72 0.25 0.75"),
+                                   ("canopy_flap", 2, flap, "0.80 0.62 0.22 0.75")):
+        used = sorted(set(elems.ravel()))
+        local = {g: k for k, g in enumerate(used)}
+        A(f'    <flex name="{name}" dim="{dim}" radius="0.0005" rgba="{rgba}"')
+        A(f'          body="{" ".join(vname(*verts[g]) for g in used)}"')
+        A(f'          vertex="{" ".join(["0 0 0"] * len(used))}"')
+        A(f'          element="{" ".join(str(local[g]) for g in elems.ravel())}">')
+        A('      <contact contype="0" conaffinity="0" selfcollide="none"/>')
+        A('    </flex>')
     A('  </deformable>')
     A('')
     A('  <equality>')
-    A(f'    <flex flex="canopy" solref="{FLEX_SOLREF}"/>')
+    for name in ("canopy_solid", "canopy_flap"):
+        A(f'    <flex flex="{name}" solref="{FLEX_SOLREF}"/>')
     A('  </equality>')
     A('')
 
     # ---------------- TENDONS ----------------
     A('  <tendon>')
-    A('    <!-- ---- suspension lines: UHMWPE, tension-only (upper limit = taut) ---- -->')
-    for i in LINE_PANELS:
-        side = "l" if panel_phi(i) > 0 else "r"
-        rows = [(r, {"A": "f", "B": "r", "C": "c"}[r] + side) for r in station_rows(i)]
+    A('    <!-- ---- suspension lines: UHMWPE, tension-only (upper limit = taut), on the lower surface ---- -->')
+    for r in LINE_ROWS:
+        side = "l" if row_phi(r) > 0 else "r"
+        rows = [(row, {"A": "f", "B": "r", "C": "c"}[row] + side) for row in station_rows(r)]
         for row, hp in rows:
-            name = f"line_{row}{i}"
+            name = f"line_{row}{r}"
             rng = tr.get(name, 0.40)
             A(f'    <spatial name="{name}" class="line" range="0 {rng:.6f}">')
             A(f'      <site site="hp_{hp}"/>')
-            A(f'      <site site="{vname(*station_vertex(i, row))}"/>')
+            A(f'      <site site="{vname(*station_vertex(r, row))}"/>')
             A('    </spatial>')
     A('')
-    A('    <!-- Brake lines: servo arm tip straight to the trailing-edge tip vertex, two sites. Tension-only, like the suspension: slack below L0, carrying load at L0. Pulling it deflects the deformable trailing edge, as on a real single-skin wing. -->')
+    A('    <!-- Brake lines: servo arm tip straight to the trailing-edge tip vertex, two sites. Tension-only, like the suspension: slack below L0, carrying load at L0. Pulling it deflects the deformable trailing edge. -->')
     for side in ("L", "R"):
         name = f"brake_{side}"
         rng = tr.get(name, 0.40)
         A(f'    <spatial name="{name}" class="brake" range="0 {rng:.6f}">')
         A(f'      <site site="bl_start_{side}"/>')
         A(f'      <site site="{vname(*BRAKE_VERTEX[side])}"/>')
+        A('    </spatial>')
+    A('')
+    A('    <!-- Brake flap lower surface: tension-only, so the trailing edge deflects down under the brake but lift cannot push it up past the design section. -->')
+    for name, u, v in flap_tendons():
+        A(f'    <spatial name="{name}" class="flap" range="0 {tr.get(name, 0.05):.6f}">')
+        A(f'      <site site="{vname(*u)}"/>')
+        A(f'      <site site="{vname(*v)}"/>')
         A('    </spatial>')
     A('  </tendon>')
     A('')
@@ -701,6 +780,8 @@ def main():
     print(f"geometry:  arc half-angle {PHI_HALF:.4f} rad, R = {R_ARC:.4f} m, "
           f"arc {THETA:.4f} rad")
     print(f"           flat area {S_FLAT:.3f} m^2, projected {S_FLAT*PROJ_FRACTION:.3f} m^2")
+    print(f"section:   {THICKNESS:.0%} thick; hollow fabric {fabric_area():.3f} m^2 "
+          f"-> PEEK {fabric_thickness()*1e6:.0f} um, double-skin EI {sandwich_ei():.0f} N.m per m")
     print(f"BOM total: {BOM_TOTAL_G:.1f} g  (spec itemised sum = 325.4 g)")
 
     try:

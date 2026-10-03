@@ -25,22 +25,27 @@ T is its own inverse and its own transpose, so one matrix serves both ways.
 DEFORMABLE CANOPY
 -----------------
 The paper welds canopy and fuselage into one rigid body. Here the pod is a free
-body and the canopy is a DEFORMABLE SKIN: a MuJoCo flex shell over a grid of
-point-mass vertices (build_paramotor.py). The skin bends, twists and cambers
-under load; nothing about its shape is fixed.
+body and the canopy is a "FAKE HOLLOW" WING: the airfoil-shaped volume a
+double-skin wing inflates to, meshed as a solid of point-mass vertices with the
+mass distribution of the hollow skins and ribs (build_paramotor.py). No air
+pressure is modeled; the stiffness the pressure would give the fabric comes
+from edge-length constraints instead.
 
-Each grid cell (four neighbouring vertices) is one aerodynamic strip element.
-Its frame comes from the CURRENT vertex positions: x along the local chord
-(trailing edge to leading edge), z along the local surface normal. Its velocity
-is the mean of its corners' velocities. Its force is split equally over its
-four corners. So camber, twist and brake deflection all change the local
-incidence directly.
+Lift and drag act on the wing as a whole, once. They are computed on the MEAN
+SURFACE: the midpoint of the upper and lower vertices at each chord station (the
+leading- and trailing-edge vertices are shared). Each mean-surface grid cell
+(four neighbouring points) is one aerodynamic strip element. Its frame comes
+from the CURRENT positions: x along the local chord (trailing edge to leading
+edge), z along the local surface normal. Its velocity is the mean of its
+corners'. Its force is split equally over its four corners, and each corner's
+share half to the upper and half to the lower vertex. So twist and brake
+deflection change the local incidence directly.
 
-The canopy reference for the pure moments and the lumped mode is the skin's
-mass centre, mean velocity, mass-weighted angular velocity, and mean frame
-(canopy_state()). Pure moments are applied as the force couple that gives the
-skin that moment with zero net force. These references do not establish the
-physical canopy's centre of pressure.
+The canopy reference for the pure moments and the lumped mode is the vertices'
+mass centre, mean velocity, mass-weighted angular velocity, and the mean
+surface's frame (canopy_state()). Pure moments are applied as the force couple
+that gives the canopy that moment with zero net force. These references do not
+establish the physical canopy's centre of pressure.
 
 LUMPED vs STRIP
 ---------------
@@ -199,9 +204,109 @@ def euler_phi_from_R_frd(R_frd):
 
 # ============================================================================
 # Deformable-canopy geometry. Elementwise only; xp is numpy or jax.numpy.
-# Grids are (span rows S, chord stations C, 3), chord station 0 = leading edge,
-# span row 0 = right tip.
+# Vertices are a flat (N, 3) array. Mean-surface grids are (span rows S, chord
+# stations C, 3), chord station 0 = leading edge, span row 0 = right tip.
 # ============================================================================
+
+def canopy_topology(S, C):
+    """Index layout of the fake-hollow canopy: S span rows, C chord stations.
+
+    Flat vertex order, row by row: the upper surface's stations 0..C-1
+    (leading edge to trailing edge), then the lower surface's stations 1..C-2.
+    The leading- and trailing-edge vertices are shared by both surfaces.
+
+    Returns a dict of int arrays:
+      upper, lower  (S, C) flat index of each station. lower[:, 0] and
+                    lower[:, C-1] are the shared edge vertices, so
+                    0.5 * (X[upper] + X[lower]) is the mean surface.
+      upper_tris, lower_tris
+                    (T, 3) surface triangles, normals out of the volume.
+      rib_tris      every row's section (the ribs a real double skin has).
+      tets          (K, 4) solid elements from the leading edge to the last
+                    lower-surface station. The trailing-edge bay is left out:
+                    it is the brake flap (see build_paramotor.py).
+    """
+    n_row = 2 * C - 2
+    rows = np.arange(S)[:, None] * n_row
+    upper = rows + np.arange(C)[None]
+    lower = upper.copy()
+    lower[:, 1:C - 1] = rows + C + np.arange(C - 2)[None]
+
+    def quads(g, c0, c1, outward_up):
+        tris = []
+        for s in range(S - 1):
+            for c in range(c0, c1):
+                a, b, cc, d = g[s, c], g[s + 1, c], g[s, c + 1], g[s + 1, c + 1]
+                tris += ([(a, b, cc), (b, d, cc)] if outward_up
+                         else [(a, cc, b), (b, cc, d)])
+        return tris
+
+    def section(s):
+        return [upper[s, c] for c in range(C)] + [lower[s, c] for c in range(C - 2, 0, -1)]
+
+    def fan(poly):
+        return [(poly[0], poly[k], poly[k + 1]) for k in range(1, len(poly) - 1)]
+
+    # Every bay of every row pair is cut into triangular prisms (section
+    # triangle at row s, extruded to row s+1), and each prism into three tets.
+    tets = []
+    for s in range(S - 1):
+        tri = [(0, 1, (1, "l"))]                       # nose bay
+        for c in range(1, C - 2):                      # four-sided bays
+            tri += [(c, c + 1, (c + 1, "l")), (c, (c + 1, "l"), (c, "l"))]
+        for t in tri:
+            ids = [lower[:, k[0]] if isinstance(k, tuple) else upper[:, k] for k in t]
+            tets += _prism_tets([g[s] for g in ids] + [g[s + 1] for g in ids])
+    out = dict(upper=upper, lower=lower,
+               upper_tris=quads(upper, 0, C - 1, True),
+               lower_tris=quads(lower, 1, C - 1, False),
+               rib_tris=[t for s in range(S) for t in fan(section(s))],
+               tets=tets)
+    return {k: np.asarray(v, dtype=int) for k, v in out.items()}
+
+
+# Dompierre et al., "How to subdivide pyramids, prisms and hexahedra into
+# tetrahedra" (1999): rotate the prism so its lowest global index is vertex 0,
+# then cut each quad face along the diagonal from its lowest index. Neighbouring
+# prisms cut a shared face the same way, so the mesh is conforming.
+_PRISM_ROT = ((0, 1, 2, 3, 4, 5), (1, 2, 0, 4, 5, 3), (2, 0, 1, 5, 3, 4),
+              (3, 5, 4, 0, 2, 1), (4, 3, 5, 1, 0, 2), (5, 4, 3, 2, 1, 0))
+
+
+def _prism_tets(v):
+    """Three tets of the prism with bottom (v0, v1, v2) and top (v3, v4, v5)."""
+    v = [v[i] for i in _PRISM_ROT[int(np.argmin(v))]]
+    if min(v[1], v[5]) < min(v[2], v[4]):
+        return [(v[0], v[1], v[2], v[5]), (v[0], v[1], v[5], v[4]), (v[0], v[4], v[5], v[3])]
+    return [(v[0], v[1], v[2], v[4]), (v[0], v[4], v[2], v[5]), (v[0], v[4], v[5], v[3])]
+
+
+def scatter_add(n, idx, values, xp=np):
+    """Sum values (len(idx), ...) into n rows by index; repeated indices add."""
+    if xp is np:
+        out = np.zeros((n,) + values.shape[1:])
+        np.add.at(out, idx, values)
+        return out
+    return xp.zeros((n,) + values.shape[1:], values.dtype).at[idx].add(values)
+
+
+def mean_surface(X, upper, lower):
+    """Mean-surface grid (S, C, ...) from flat per-vertex values X."""
+    return 0.5 * (X[upper] + X[lower])
+
+
+def split_to_skins(F, upper, lower, n, xp=np):
+    """Each mean-surface point's force half to its upper, half to its lower vertex."""
+    idx = np.concatenate((upper.ravel(), lower.ravel()))
+    half = 0.5 * F.reshape(-1, 3)
+    return scatter_add(n, idx, xp.concatenate((half, half)), xp)
+
+
+def triangle_areas(P, tris, xp=np):
+    """Vector area of each triangle, along its outward normal."""
+    a, b, c = P[tris[:, 0]], P[tris[:, 1]], P[tris[:, 2]]
+    return 0.5 * _cross(b - a, c - a, xp)
+
 
 def _cross(a, b, xp):
     return xp.stack((a[..., 1] * b[..., 2] - a[..., 2] * b[..., 1],
@@ -267,22 +372,24 @@ def solve3(A, b, xp=np):
 
 
 def canopy_state(P, V, mass, R_cells, area, xp=np):
-    """Skin reference state: mass centre, mean velocity, angular velocity, frame.
+    """Canopy reference state: mass centre, mean velocity, angular velocity, frame.
 
-    The angular velocity is the one that gives the skin's actual angular
-    momentum about its mass centre (exact for rigid motion). The frame averages
-    the cells' chord and normal directions by area. Also returns the inertia
-    tensor about the mass centre and the offsets r of every vertex.
+    P, V, mass are the flat (N, ...) vertex arrays; R_cells and area are the
+    mean-surface cells. The angular velocity is the one that gives the
+    vertices' actual angular momentum about their mass centre (exact for rigid
+    motion). The frame averages the cells' chord and normal directions by area.
+    Also returns the inertia tensor about the mass centre and the offsets r of
+    every vertex.
     """
     m = mass[..., None]
     total = mass.sum()
-    com = (m * P).sum(axis=(0, 1)) / total
-    vbar = (m * V).sum(axis=(0, 1)) / total
+    com = (m * P).sum(axis=0) / total
+    vbar = (m * V).sum(axis=0) / total
     r = P - com
     rr = _dot(r, r, xp)
     inertia = (mass[..., None, None] * (rr[..., None, None] * xp.eye(3)
-               - r[..., :, None] * r[..., None, :])).sum(axis=(0, 1))
-    momentum = (m * _cross(r, V - vbar, xp)).sum(axis=(0, 1))
+               - r[..., :, None] * r[..., None, :])).sum(axis=0)
+    momentum = (m * _cross(r, V - vbar, xp)).sum(axis=0)
     omega = solve3(inertia, momentum, xp)
     w = area[..., None]
     z = _unit((w * R_cells[..., :, 2]).sum(axis=(0, 1)), xp)
@@ -323,9 +430,12 @@ def strip_cells(P, V, p, xp=np):
 class CanopyMesh:
     """Where the deformable canopy's vertices live in a compiled model.
 
-    Vertex bodies are named cv_<row>_<station> by build_paramotor.py; each has
-    three world-axis slide joints, so its velocity is its three qvel entries
-    and a force on it is added straight to those three dofs.
+    Vertex bodies are named cvu_<row>_<station> (upper surface, stations
+    0..C-1) and cvl_<row>_<station> (lower surface, stations 1..C-2; the
+    leading and trailing edges are the upper surface's) by build_paramotor.py. Each has three world-axis
+    slide joints, so its velocity is its three qvel entries and a force on it
+    is added straight to those three dofs. Arrays are flat, in the order of
+    canopy_topology().
     """
 
     def __init__(self, model):
@@ -333,34 +443,51 @@ class CanopyMesh:
         found = {}
         for b in range(model.nbody):
             name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) or ""
-            if name.startswith("cv_"):
-                _, row, station = name.split("_")
-                found[int(row), int(station)] = b
+            if name.startswith(("cvu_", "cvl_")):
+                skin, row, station = name.split("_")
+                found[skin[2], int(row), int(station)] = b
         if not found:
-            raise ValueError("model has no deformable canopy (cv_* vertex bodies)")
-        S = 1 + max(k[0] for k in found)
-        C = 1 + max(k[1] for k in found)
-        self.bodies = np.array([[found[s, c] for c in range(C)] for s in range(S)])
-        dof, qpos = np.zeros((S, C, 3), int), np.zeros((S, C, 3), int)
-        for (s, c), b in found.items():
+            raise ValueError("model has no deformable canopy (cvu_*/cvl_* vertex bodies)")
+        S = 1 + max(k[1] for k in found)
+        C = 1 + max(k[2] for k in found if k[0] == "u")
+        order = [("u", s, c) for s in range(S) for c in range(C)]
+        order += [("l", s, c) for s in range(S) for c in range(1, C - 1)]
+        if set(order) != set(found):
+            raise ValueError("canopy vertex names do not form an S x C upper/lower grid")
+        topo = canopy_topology(S, C)
+        flat = np.empty(len(order), int)
+        for k in order:
+            skin, s, c = k
+            flat[(topo["upper"] if skin == "u" else topo["lower"])[s, c]] = found[k]
+        self.bodies = flat
+        dof, qpos = np.zeros((len(flat), 3), int), np.zeros((len(flat), 3), int)
+        for i, b in enumerate(flat):
             if model.body_dofnum[b] != 3 or model.body_parentid[b] != 0:
                 raise ValueError(f"vertex body {b} must be a world child with 3 slides")
             for k in range(3):
                 j = model.body_jntadr[b] + k
                 if model.jnt_type[j] != mujoco.mjtJoint.mjJNT_SLIDE or model.jnt_axis[j][k] != 1.0:
                     raise ValueError("vertex slides must be world x, y, z in order")
-                dof[s, c, k] = model.jnt_dofadr[j]
-                qpos[s, c, k] = model.jnt_qposadr[j]
+                dof[i, k] = model.jnt_dofadr[j]
+                qpos[i, k] = model.jnt_qposadr[j]
         self.dof, self.qpos = dof, qpos
-        self.rest = model.body_pos[self.bodies].copy()      # world, at qpos = 0
-        self.mass = model.body_mass[self.bodies].copy()
-        self.shape = (S, C)
+        self.rest = model.body_pos[flat].copy()      # world, at qpos = 0
+        self.mass = model.body_mass[flat].copy()
+        self.upper, self.lower = topo["upper"], topo["lower"]
+        self.topology = topo
+        self.shape = (S, C)            # mean-surface grid
 
     def positions(self, qpos):
         return self.rest + qpos[self.qpos]
 
     def velocities(self, qvel):
         return qvel[self.dof]
+
+    def mean(self, X):
+        return mean_surface(X, self.upper, self.lower)
+
+    def split(self, F):
+        return split_to_skins(F, self.upper, self.lower, len(self.bodies))
 
 
 def set_linear_velocity(model, data, v_world):
@@ -397,14 +524,14 @@ class ParamotorAero:
         ch, sh = math.cos(self.p["chi"]), math.sin(self.p["chi"])
         self.T_BP = np.array([[ch, 0.0, sh], [0.0, 1.0, 0.0], [-sh, 0.0, ch]])
 
-        R, area, _ = cell_frames(self.mesh.rest)
+        R, area, _ = cell_frames(self.mesh.mean(self.mesh.rest))
         self.cell_area = area
         self.arch_recovery = self._arch_recovery(R, area)
         self.p.setdefault("strip_cl_scale", self.arch_recovery)
         tot = float(area.sum())
         if abs(tot - self.p["AP"]) / self.p["AP"] > 0.02:
             raise ValueError(
-                "skin area is %.5f m^2 but AP = %.5f m^2 (%.1f%% apart). "
+                "mean-surface area is %.5f m^2 but AP = %.5f m^2 (%.1f%% apart). "
                 "The parameter set and the geometry disagree."
                 % (tot, self.p["AP"], 100 * abs(tot - self.p["AP"]) / self.p["AP"]))
 
@@ -421,7 +548,7 @@ class ParamotorAero:
 
     @staticmethod
     def _arch_recovery(R, area):
-        """sum(A_i) / sum(A_i * n_i.zhat) for the skin at its rest shape.
+        """sum(A_i) / sum(A_i * n_i.zhat) for the mean surface at rest.
 
         Cell lift follows each cell's normal. This factor normalizes the
         straight-flow vertical lift to the lumped whole-wing coefficient model
@@ -453,10 +580,10 @@ class ParamotorAero:
         self._enabled = bool(v)
 
     def canopy_state(self, data):
-        """(com, mean velocity, angular velocity, frame) of the skin."""
+        """(com, mean velocity, angular velocity, frame) of the canopy."""
         P = self.mesh.positions(data.qpos)
         V = self.mesh.velocities(data.qvel)
-        R, area, _ = cell_frames(P)
+        R, area, _ = cell_frames(self.mesh.mean(P))
         return canopy_state(P, V, self.mesh.mass, R, area)[:4]
 
     # -- the callback --------------------------------------------------------
@@ -471,12 +598,12 @@ class ParamotorAero:
         mesh = self.mesh
         P = mesh.positions(data.qpos)
         V = mesh.velocities(data.qvel)
-        f_cells, alpha, alpha_raw, R, area = strip_cells(P, V, self.p)
+        f_cells, alpha, alpha_raw, R, area = strip_cells(mesh.mean(P), mesh.mean(V), self.p)
         com, vbar, omega, R_c, inertia, r = canopy_state(P, V, mesh.mass, R, area)
         w_body = T_FLIP @ (R_c.T @ omega)              # canopy frame, FRD
 
         if self.mode == "strip":
-            F = spread_to_corners(f_cells)
+            F = mesh.split(spread_to_corners(f_cells))
             V_P = float(np.linalg.norm(vbar))
             roll_native = True
             self.last["f_cells"] = f_cells
