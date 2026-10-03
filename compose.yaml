@@ -1,0 +1,22 @@
+# docker compose run --rm rl <command>     e.g.
+#   docker compose run --rm rl python train.py --smoke --output runs/smoke
+# The repo is mounted at /workspace, so code edits apply without a rebuild and
+# runs/ (checkpoints, metrics) lands on the host. Rebuild only when
+# requirements-rl.txt changes. See RL.md -> Docker.
+services:
+  rl:
+    build:
+      context: .
+      args:
+        JAX_CUDA: ${JAX_CUDA:-cuda13}
+    image: paramotor-rl:${JAX_CUDA:-cuda13}
+    volumes:
+      - .:/workspace
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
