@@ -451,10 +451,11 @@ def main():
         jax.random.split(rk, pc.num_envs), difficulty
     )
     rollout, update = make_rollout(env, network, pc), make_update(network, pc)
+    # The gate flies whole episodes (to the end of the current route, a
+    # failure, or the time limit), so promotion is judged on the full route
+    # rather than the first few seconds after launch.
     gate = jax.jit(
-        lambda params, diff: evaluate_batch(
-            env, network, params, difficulty=diff, steps=min(env.episode_steps, 250)
-        )
+        lambda params, diff: evaluate_batch(env, network, params, difficulty=diff)
     )
     (args.output / "config.json").write_text(
         json.dumps({"env": asdict(ec), "ppo": asdict(pc)}, indent=2)

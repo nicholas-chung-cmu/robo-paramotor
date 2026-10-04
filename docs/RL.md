@@ -402,9 +402,9 @@ whatever the run has written so far and produces `runs/<name>/analysis/`:
 
 Read them in this order. Training reward rises at fixed difficulty but drops
 each time the curriculum steps up, so judge progress against the difficulty
-trace, not reward alone. The gate flies only 10 s (250 steps) per seed, so a
-policy can pass it and still fail the 60 s evaluation flights. The evaluation
-is the real test.
+trace, not reward alone. The gate flies each seed's whole episode at the
+current difficulty (to the end of the route, a failure, or the time limit), but
+only on 8 fixed seeds, so the evaluation is still the real test.
 
 ## Comparing configurations (rliable)
 
