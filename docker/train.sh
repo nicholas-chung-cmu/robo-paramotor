@@ -17,6 +17,8 @@
 #   docker/train.sh --name first --retries 5         # retry a crashed run up to 5 times (default 3)
 #   docker/train.sh --finish first                   # finish an interrupted runs/first to its original
 #                                                    #   target (same retries), then evaluate + analyze
+#   docker/train.sh --name base --seeds 4 --gpus 0,1 # seeds in parallel, one worker per GPU
+#                                                    #   (default GPU list: machine.toml `gpus`)
 #   docker/train.sh --name first --headed            # train + a window replaying, for every
 #                                                    # new checkpoint, its best of 32 flights
 #   docker/train.sh --watch first                    # that window for a run already training
@@ -45,7 +47,7 @@ cd "$(dirname "$0")/.."
 ORIGINAL_ARGS="$*"
 NAME="ppo-$(date +%Y%m%d-%H%M%S)"
 CPU=0 RESUME=0 FINISH=0 SMOKE=0 SEEDS=1 SEED=0 EPISODES=20 MODE=train HEADED=0 VERBOSE=0 RETRIES=3
-TARGETS=() TRAIN_ARGS=()
+TARGETS=() TRAIN_ARGS=() GPU_ARG=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name)      NAME="$2"; shift 2 ;;
@@ -53,6 +55,7 @@ while [[ $# -gt 0 ]]; do
     --resume)    RESUME=1; shift ;;
     --finish)    RESUME=1; FINISH=1; NAME="$2"; shift 2 ;;
     --retries)   RETRIES="$2"; shift 2 ;;
+    --gpus)      GPU_ARG="$2"; shift 2 ;;
     --smoke)     SMOKE=1; TRAIN_ARGS+=("$1"); shift ;;
     --seeds)     SEEDS="$2"; shift 2 ;;
     --seed)      SEED="$2"; shift 2 ;;
@@ -79,11 +82,20 @@ else
   docker build -q -f docker/Dockerfile -t "$IMAGE" --build-arg JAX_CUDA="$JAX_CUDA" . >/dev/null
 fi
 
+# GPUs to use: --gpus 0,1, else machine.toml's `gpus` list, else GPU 0. Each
+# container sees exactly ONE of them (as its device 0), so the training code
+# needs no multi-GPU support: --seeds runs one worker per GPU in parallel.
+if [[ -z "$GPU_ARG" ]]; then
+  GPU_ARG=$(python3 -c 'import tomllib; print(",".join(map(str, tomllib.load(open("machine.toml", "rb")).get("gpus", [0]))))' 2>/dev/null || echo 0)
+fi
+IFS=, read -r -a GPUS <<< "$GPU_ARG"
+GPU_DEVICE="${GPUS[0]}"   # the GPU in_container uses; workers set their own
+
 # Run as the host user so runs/ is not owned by root. HOME and MPLCONFIGDIR
 # point at /tmp because that user has no home directory in the image.
 in_container() {
   local gpu=() tty=()
-  [[ $CPU -eq 0 && "${NO_GPU:-0}" -eq 0 ]] && gpu=(--gpus all)
+  [[ $CPU -eq 0 && "${NO_GPU:-0}" -eq 0 ]] && gpu=(--gpus "device=$GPU_DEVICE")
   [[ -t 1 ]] && tty=(-t)  # live, coloured output when run from a terminal
   docker run --rm ${gpu[@]+"${gpu[@]}"} ${tty[@]+"${tty[@]}"} ${display[@]+"${display[@]}"} --ipc=host \
     -u "$(id -u):$(id -g)" -e HOME=/tmp -e MPLCONFIGDIR=/tmp \
@@ -108,20 +120,30 @@ use_display() {
   fi
 }
 
-# One GPU job at a time. Two jobs can drive the card out of memory, and on this
-# machine that has crashed the NVIDIA driver and the displays. Training,
-# evaluation and tests hold runs/.gpu.lock until train.sh exits; the watcher
-# window and the interactive viewer are light and do not take it.
-gpu_lock() {
+# One GPU job per GPU. Two jobs on one card can drive it out of memory, and on
+# the 5080 desktop that has crashed the NVIDIA driver and the displays.
+# Training, evaluation and tests hold runs/.gpu<N>.lock for each GPU they use
+# until train.sh exits; the watcher window and the interactive viewer are
+# light and do not take it.
+LOCK_FDS=()
+# Close the lock descriptors in a subshell that outlives training (the watcher
+# window), so the GPUs are free as soon as train.sh exits.
+release_locks() { local fd; for fd in ${LOCK_FDS[@]+"${LOCK_FDS[@]}"}; do exec {fd}>&-; done; }
+gpu_lock() {  # gpu_lock N...
+  [[ $CPU -eq 1 ]] && return 0
   mkdir -p runs
-  exec 9>>runs/.gpu.lock
-  if ! flock -n 9; then
-    echo "train.sh: another GPU job is running (runs/.gpu.lock): $(cat runs/.gpu.lock)" >&2
-    echo "train.sh: wait for it to finish, or stop it, then run this again." >&2
-    exit 1
-  fi
-  : > runs/.gpu.lock
-  echo "pid $$ since $(date '+%F %T'): docker/train.sh $ORIGINAL_ARGS" >> runs/.gpu.lock
+  local n fd
+  for n in "$@"; do
+    exec {fd}>>"runs/.gpu$n.lock"
+    LOCK_FDS+=("$fd")
+    if ! flock -n "$fd"; then
+      echo "train.sh: GPU $n is busy (runs/.gpu$n.lock): $(cat "runs/.gpu$n.lock")" >&2
+      echo "train.sh: wait for that job, stop it, or pick other GPUs with --gpus." >&2
+      exit 1
+    fi
+    : > "runs/.gpu$n.lock"
+    echo "pid $$ since $(date '+%F %T'): docker/train.sh $ORIGINAL_ARGS" >> "runs/.gpu$n.lock"
+  done
 }
 
 case "$MODE" in
@@ -138,7 +160,7 @@ case "$MODE" in
     in_container python -m viewer.watch_training "runs/${TARGETS[0]}"
     exit $? ;;
   test)
-    gpu_lock
+    gpu_lock "$GPU_DEVICE"
     in_container python -m pytest -v ${TARGETS[@]+"${TARGETS[@]}"}
     exit $? ;;
   analyze)
@@ -187,16 +209,19 @@ train_one() {
   done
 }
 
-gpu_lock  # before the watcher, so a refused run leaves no window behind
+# One worker per GPU, at most one per seed; each trains its seeds in turn.
+WORKERS=$(( SEEDS < ${#GPUS[@]} ? SEEDS : ${#GPUS[@]} ))
+(( WORKERS >= 1 )) || WORKERS=1
+gpu_lock "${GPUS[@]:0:$WORKERS}"  # before the watcher, so a refused run leaves no window behind
 if [[ $HEADED -eq 1 ]]; then
   # The watcher window runs beside training in its own container and stays
   # open after training ends; close the window to stop it.
   mkdir -p "runs/$NAME"
   if [[ $VERBOSE -eq 1 ]]; then  # watcher messages in this terminal too, prefixed
-    ( use_display; in_container python -m viewer.watch_training "runs/$NAME" 2>&1 \
+    ( release_locks; use_display; in_container python -m viewer.watch_training "runs/$NAME" 2>&1 \
         | tee "runs/$NAME/watch.log" | sed -u 's/^/[watch] /' ) &
   else
-    ( use_display; in_container python -m viewer.watch_training "runs/$NAME" \
+    ( release_locks; use_display; in_container python -m viewer.watch_training "runs/$NAME" \
         > "runs/$NAME/watch.log" 2>&1 ) &
   fi
   echo "== watcher window started (log: runs/$NAME/watch.log); it opens after the first checkpoint"
@@ -204,10 +229,35 @@ fi
 
 RUNS=()
 if [[ $SEEDS -le 1 ]]; then
-  RUNS=("runs/$NAME"); train_one "runs/$NAME" "$SEED"
+  RUNS=("runs/$NAME")
 else
-  for ((k = 0; k < SEEDS; k++)); do RUNS+=("runs/$NAME/seed$k"); train_one "runs/$NAME/seed$k" "$((SEED + k))"; done
+  for ((k = 0; k < SEEDS; k++)); do RUNS+=("runs/$NAME/seed$k"); done
 fi
+# Worker w trains seeds w, w+WORKERS, ... on GPU ${GPUS[w]}, each with its own
+# retries. With several workers, terminal lines are prefixed [gpuN].
+PIDS=()
+for ((w = 0; w < WORKERS; w++)); do
+  (
+    GPU_DEVICE="${GPUS[w]}"
+    for ((k = w; k < ${#RUNS[@]}; k += WORKERS)); do
+      if [[ $WORKERS -gt 1 ]]; then
+        train_one "${RUNS[k]}" "$((SEED + k))" 2>&1 | sed -u "s/^/[gpu$GPU_DEVICE] /"
+        [[ ${PIPESTATUS[0]} -eq 0 ]] || exit 1
+      else
+        train_one "${RUNS[k]}" "$((SEED + k))"
+      fi
+    done
+  ) &
+  PIDS+=($!)
+done
+FAILED=0
+for pid in "${PIDS[@]}"; do wait "$pid" || FAILED=1; done
+# Evaluate whatever finished; a seed that gave up has no new checkpoint.
+DONE=()
+for run in "${RUNS[@]}"; do [[ -f "$run/checkpoint.pkl" ]] && DONE+=("$run"); done
+[[ ${#DONE[@]} -gt 0 ]] || { echo "== no run produced a checkpoint" >&2; exit 1; }
+[[ $FAILED -eq 1 ]] && echo "== some seeds failed after retries; evaluating the ${#DONE[@]} with checkpoints"
+RUNS=("${DONE[@]}")
 
 # All seeds fly the same flights in one batch: about the cost of evaluating one.
 echo "== [2/3] evaluating ${#RUNS[@]} checkpoint(s), $EPISODES flights per route each -> <run>/eval"
@@ -217,5 +267,5 @@ for run in "${RUNS[@]}"; do
   echo "== [3/3] analysis -> $run/analysis"
   NO_GPU=1 in_container python -m rl.analyze "$run" | tail -n 1
 done
-[[ $SEEDS -gt 1 ]] && echo "== all $SEEDS seeds done. Compare configs with: docker/train.sh --compare $NAME <other names>"
-exit 0
+[[ $SEEDS -gt 1 && $FAILED -eq 0 ]] && echo "== all $SEEDS seeds done. Compare configs with: docker/train.sh --compare $NAME <other names>"
+exit $FAILED

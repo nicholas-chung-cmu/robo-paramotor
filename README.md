@@ -33,8 +33,10 @@ docker/train.sh --finish first                # finish an interrupted run (crash
 
 Per-computer settings live in [machine.toml](machine.toml) at the repo root: the
 default number of training environments and the caps on JAX's GPU memory. Edit
-it when you move to a different machine. `docker/train.sh` runs one GPU job at
-a time (`runs/.gpu.lock`); a second training or test run refuses to start.
+it when you move to a different machine, including which GPUs to use (`gpus`).
+`docker/train.sh` runs one GPU job per GPU (`runs/.gpu<N>.lock`); a job that
+needs a busy GPU refuses to start. With several GPUs, `--seeds K` trains the
+seeds in parallel, one per GPU (`--gpus 0,1` picks them).
 
 ## Rewards
 
