@@ -31,7 +31,7 @@ import numpy as np
 from tqdm import tqdm
 
 from rl import routes
-from rl.rl_env import ParamotorEnv, config_from_saved, repeat, select
+from rl.rl_env import ENDING_REASONS, ParamotorEnv, config_from_saved, repeat, select
 from rl.train import ActorCritic, load_checkpoint
 
 COLUMNS = [
@@ -52,11 +52,62 @@ COLUMNS = [
     "episode_return",
     "failed",
     "completed",
+    "ended_ground",
+    "ended_cross_track",
+    "ended_vertical",
+    "ended_nonfinite",
     "reward",
     "terminated",
     "truncated",
 ]
 LATERAL, ALTITUDE, OUTSIDE = 10, 11, 13
+
+
+# What "works" means: a checkpoint passes when every route kind it flew, and
+# all flights together, meet every target. Proposed targets; adjust them here.
+#   (summary column or derived metric, aggregate, comparison, target)
+SUCCESS = (
+    ("completed_fraction", "≥", 0.90),   # flights that pass every route point in time
+    ("failed_fraction", "≤", 0.05),      # ground, 35 m / 25 m off route, or NaN
+    ("mean_cross_track_m", "≤", 3.0),    # mean horizontal error, averaged over flights
+    ("max_cross_track_m", "≤", 10.0),    # median over flights of each one's worst error
+    ("mean_altitude_error_m", "≤", 3.0),
+    ("alpha_outside_fraction", "≤", 0.10),  # time with a strip outside the aero range
+)
+
+
+def verdict(summary, header):
+    """Rows of (group, metric, value, target, passed) per route kind and 'all'."""
+    col = {name: i for i, name in enumerate(header)}
+    groups = {}
+    for row in summary:
+        groups.setdefault(row[0], []).append(row)
+    groups["all"] = list(summary)
+    out = []
+    for group, rows in groups.items():
+        values = {
+            "completed_fraction": np.mean([r[col["completed"]] for r in rows]),
+            "failed_fraction": np.mean([r[col["failed"]] for r in rows]),
+            "mean_cross_track_m": np.mean([r[col["mean_cross_track_m"]] for r in rows]),
+            "max_cross_track_m": np.median([r[col["max_cross_track_m"]] for r in rows]),
+            "mean_altitude_error_m": np.mean([r[col["mean_altitude_error_m"]] for r in rows]),
+            "alpha_outside_fraction": np.mean([r[col["alpha_outside_fraction"]] for r in rows]),
+        }
+        for metric, sign, target in SUCCESS:
+            value = float(values[metric])
+            out.append((group, metric, value, target, value >= target if sign == "≥" else value <= target))
+    return out
+
+
+def ended_by(row):
+    """How a flight's last recorded step ended it: a failure reason (several
+    joined by '+'), completed, time_limit, or airborne if it had not ended."""
+    reasons = [r for r in ENDING_REASONS if row[COLUMNS.index("ended_" + r)] > 0]
+    if reasons:
+        return "+".join(reasons)
+    if row[COLUMNS.index("completed")] > 0:
+        return "completed"
+    return "time_limit" if row[COLUMNS.index("truncated")] > 0 else "airborne"
 
 
 def make_evaluator(env, network, checkpoints, trace, view):
@@ -248,7 +299,8 @@ def main():
     route_points = np.asarray(points)
     count = np.maximum(stats["steps"], 1)
     header = ["path", "seed", "duration_s", "progress_m", "mean_cross_track_m", "max_cross_track_m",
-              "mean_altitude_error_m", "alpha_outside_fraction", "return", "failed", "completed"]
+              "mean_altitude_error_m", "alpha_outside_fraction", "return", "failed", "completed",
+              "ended_by"]
     for c, (checkpoint, out) in enumerate(zip(args.checkpoints, outputs)):
         out.mkdir(parents=True, exist_ok=True)
         summary = []
@@ -256,7 +308,8 @@ def main():
             n, last = c * F + j, stats["last"][c * F + j]
             summary.append([name, seed, last[0], last[12], stats["lateral"][n] / count[n],
                             stats["lateral_max"][n], stats["altitude"][n] / count[n],
-                            stats["outside"][n] / count[n], last[14], int(last[15]), int(last[16])])
+                            stats["outside"][n] / count[n], last[14], int(last[15]), int(last[16]),
+                            ended_by(last)])
         with (out / "summary.csv").open("w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(header)
@@ -279,6 +332,19 @@ def main():
         s = np.array([r[3] for r in summary]), np.array([r[9] for r in summary])
         print(f"{checkpoint}: {F} flights, mean progress {s[0].mean():.1f} m, "
               f"failed {s[1].mean():.0%} -> {out}", flush=True)
+        results = verdict(summary, header)
+        with (out / "verdict.csv").open("w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["group", "metric", "value", "target", "passed"])
+            writer.writerows(results)
+        signs = {metric: sign for metric, sign, _ in SUCCESS}
+        for group in dict.fromkeys(r[0] for r in results):
+            rows = [r for r in results if r[0] == group]
+            failing = [f"{m} {v:.2f} (needs {signs[m]} {t})" for _, m, v, t, ok in rows if not ok]
+            print(f"  {group:>12}: {'PASS' if not failing else 'FAIL  ' + '; '.join(failing)}")
+        works = all(r[4] for r in results)
+        print(f"  verdict: {'WORKS' if works else 'does not work yet'} (targets in rl/evaluate.py SUCCESS)",
+              flush=True)
     if args.view:
         qpos, qvel, ctrl = (np.concatenate([r[i] for r in records]) for i in (2, 3, 4))
         mask = alive[:, 0]

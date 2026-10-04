@@ -79,6 +79,9 @@ PAPER_ACRA2012 = dict(
     #     stall, so C_L just keeps climbing.  Ours, deliberately. ---
     alpha_min=math.radians(-8.0),
     alpha_max=math.radians(18.0),
+    # Strip mode only: past the envelope the coefficients blend into a flat
+    # plate over this width (paramotor_aero.stall_blend). Ours, not the paper's.
+    stall_width=math.radians(4.0),
 )
 
 # ----------------------------------------------------------------------------
@@ -160,6 +163,9 @@ PEEK_1M = dict(
 
     alpha_min=math.radians(-8.0),
     alpha_max=math.radians(18.0),
+    # Strip mode: blend into flat-plate coefficients over 4 deg past the
+    # envelope (a crude stall, not identified on the vehicle).
+    stall_width=math.radians(4.0),                 # [PROVISIONAL]
 )
 
 # Brake coefficients (C_Ldelta_a, C_Ddelta_a, C_ldelta_a, C_ndelta_a) and the

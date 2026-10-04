@@ -301,22 +301,63 @@ def couple_forces(moment, inertia, r, mass, xp=np):
     return mass[..., None] * _cross(xp.broadcast_to(alpha, r.shape), r, xp)
 
 
+def stall_blend(alpha_raw, p, xp=np):
+    """Weight of the post-stall (flat-plate) model, 0..1.
+
+    Exactly 0 inside [alpha_min, alpha_max], so the linear model there is
+    unchanged; it rises smoothly (smoothstep) to 1 over stall_width beyond
+    either limit.
+    """
+    width = p["stall_width"]
+    t = xp.maximum(alpha_raw - p["alpha_max"], p["alpha_min"] - alpha_raw) / width
+    t = xp.clip(t, 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
 def strip_cells(P, V, p, xp=np):
     """Strip forces on every cell, world frame.
 
-    Returns (forces (S-1, C-1, 3), alpha_used, alpha_raw, R, area)."""
-    R, area, _ = cell_frames(P, xp)
-    v_local = to_local(R, cell_mean(V), xp) * FLIP
+    P, V are the LIFTING grid (leading edge first, trailing edge last). Each
+    spanwise strip (between neighbouring rows) is one airfoil section: its
+    angle of attack is measured from the SECTION CHORD LINE (leading edge to
+    trailing edge) with the strip's area-weighted mean velocity, as for a real
+    airfoil, not from each curved surface panel's own tilt. The strip's lift
+    and drag are shared over its cells by area. Deflecting the trailing edge
+    (brakes) or collapsing the section rotates or shortens the chord line and
+    so changes the strip's incidence directly.
+
+    Inside [alpha_min, alpha_max] the linear coefficients of eq. (15) apply.
+    Beyond it they blend into a flat plate (C_L = sin 2a, C_D = C_D0 +
+    2 sin^2 a) over stall_width: lift falls and drag rises past stall. The
+    linear part is evaluated at the clipped angle so it never extrapolates.
+
+    Returns (forces (S-1, C-1, 3), alpha_used, alpha_raw, R, area), with the
+    per-strip angles and section frames broadcast to every cell; alpha_used is
+    the clipped angle (used by the pure moments and diagnostics)."""
+    _, area, _ = cell_frames(P, xp)
+    chord = xp.stack((P[:, 0], P[:, -1]), axis=1)          # (S, 2, 3) LE, TE
+    R_sec = cell_frames(chord, xp)[0][:, 0]                # (S-1, 3, 3)
+    weight = area / xp.maximum(area.sum(axis=1, keepdims=True), 1e-12)
+    v_strip = (weight[..., None] * cell_mean(V)).sum(axis=1)
+    v_local = to_local(R_sec, v_strip, xp) * FLIP
     speed = xp.sqrt(_dot(v_local, v_local, xp))
     u, w = v_local[..., 0], v_local[..., 2]
     alpha_raw = xp.arctan2(w, u)
     alpha = xp.clip(alpha_raw, p["alpha_min"], p["alpha_max"])
-    cl = (p["CL0"] + p["CLa"] * alpha) * p.get("strip_cl_scale", 1.0)
-    cd = p["CD0"] + p["CDa"] * alpha ** 2
+    s = stall_blend(alpha_raw, p, xp)
+    sin_a, cos_a = xp.sin(alpha_raw), xp.cos(alpha_raw)
+    cl = ((1 - s) * (p["CL0"] + p["CLa"] * alpha) * p.get("strip_cl_scale", 1.0)
+          + s * 2.0 * sin_a * cos_a)
+    cd = (1 - s) * (p["CD0"] + p["CDa"] * alpha ** 2) + s * (p["CD0"] + 2.0 * sin_a ** 2)
     lift = xp.stack((w, xp.zeros_like(w), -u), axis=-1)
-    f = (0.5 * p["rho"] * area * speed)[..., None] * (cl[..., None] * lift - cd[..., None] * v_local)
+    f = (0.5 * p["rho"] * area.sum(axis=1) * speed)[..., None] * (
+        cl[..., None] * lift - cd[..., None] * v_local)
     f = xp.where((speed > _EPS_V)[..., None], f, 0.0)
-    return to_world(R, f * FLIP, xp), alpha, alpha_raw, R, area
+    forces = weight[..., None] * to_world(R_sec, f * FLIP, xp)[:, None, :]
+    shape = area.shape
+    return (forces, xp.broadcast_to(alpha[:, None], shape),
+            xp.broadcast_to(alpha_raw[:, None], shape),
+            xp.broadcast_to(R_sec[:, None], shape + (3, 3)), area)
 
 
 # ============================================================================

@@ -22,7 +22,7 @@ import numpy as np
 import optax
 import warp as wp
 
-from rl.rl_env import EnvConfig, ParamotorEnv, config_from_saved, select
+from rl.rl_env import ENDING_REASONS, EnvConfig, ParamotorEnv, config_from_saved, select
 
 
 @dataclass
@@ -432,6 +432,11 @@ def main():
     )
     mode = "a" if saved and (args.output / "metrics.csv").exists() else "w"
     gate_mode = "a" if saved and (args.output / "eval.csv").exists() else "w"
+    endings_mode = "a" if saved and (args.output / "endings.csv").exists() else "w"
+    endings_file = (args.output / "endings.csv").open(endings_mode, newline="", buffering=1)
+    endings_writer = csv.writer(endings_file)
+    if endings_mode == "w":
+        endings_writer.writerow(("update", "ended", *ENDING_REASONS, "completed", "time_limit"))
     memory_mode = "a" if saved and (args.output / "memory.csv").exists() else "w"
     memory_file = (args.output / "memory.csv").open(memory_mode, newline="", buffering=1)
     memory_writer = csv.writer(memory_file)
@@ -486,6 +491,12 @@ def main():
             done = np.asarray(batch[6] | batch[7])
             ended = done.sum()
             finished = (metrics[:, :, 4] * done).sum() / max(ended, 1)
+            # How the episodes ended: failure reasons (metrics after `completed`;
+            # one step can trip several), success, and the time limit.
+            terminated, truncated = np.asarray(batch[6]), np.asarray(batch[7])
+            causes = [int(metrics[:, :, 7 + i][done].sum()) for i in range(len(ENDING_REASONS))]
+            causes += [int(metrics[:, :, 6][done].sum()), int((truncated & ~terminated).sum())]
+            endings_writer.writerow((iteration + 1, int(ended), *causes))
             count = pc.num_envs * pc.rollout_steps
             env_steps += count
             speed = count / (time.monotonic() - begin)
@@ -517,7 +528,8 @@ def main():
                     f"    ppo: policy_loss={loss[0]:+.4f} value_loss={loss[1]:.4f} "
                     f"entropy={loss[2]:.3f} approx_kl={loss[3]:.5f} | altitude_err="
                     f"{metrics[:,:,1].mean():.2f} m outside_alpha={metrics[:,:,3].mean():.1%} | "
-                    f"episodes_ended={int(ended)} finished_return={finished:.1f} | "
+                    f"episodes_ended={int(ended)} finished_return={finished:.1f} "
+                    f"({', '.join(f'{n} {c}' for n, c in zip((*ENDING_REASONS, 'completed', 'time_limit'), causes) if c)}) | "
                     f"{count / speed:.1f} s/update, {env_steps / 1e6:.2f} M steps total",
                     flush=True,
                 )
@@ -554,6 +566,7 @@ def main():
                     env_steps,
                 )
     memory_file.close()
+    endings_file.close()
     print("Saved", checkpoint, flush=True)
 
 

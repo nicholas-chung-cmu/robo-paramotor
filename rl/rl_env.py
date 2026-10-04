@@ -94,6 +94,9 @@ class EnvConfig:
     solver_ls_iterations: int = 5
 
 
+# Failure reasons, in the order they follow `completed` in step()'s metrics.
+ENDING_REASONS = ("ground", "cross_track", "vertical", "nonfinite")
+
 # Checkpoints saved before the route fields existed trained on 513 points 2 m apart.
 LEGACY_ROUTE = {"route_points": 513, "route_spacing_m": 2.0}
 
@@ -537,12 +540,14 @@ class ParamotorEnv:
         within = (raw >= self.physics.p["alpha_min"]) & (raw <= self.physics.p["alpha_max"])
         outside = ~jp.all(within)  # for metrics only; it no longer ends the episode
         finite = jp.all(jp.isfinite(data.qpos)) & jp.all(jp.isfinite(data.qvel))
-        failed = (
-            (~finite)
-            | (pos[2] < 0)
-            | (lateral > self.cfg.max_cross_track_m)
-            | (vertical > 25)
-        )
+        # Why an episode fails; more than one can trip on the same step.
+        reasons = jp.stack((
+            pos[2] < 0,                              # ground
+            lateral > self.cfg.max_cross_track_m,    # off route sideways
+            vertical > 25,                           # off route vertically
+            ~finite,                                 # non-finite physics
+        ))
+        failed = jp.any(reasons)
         completed = target > last
         terminated = failed | completed
         truncated = state.steps + 1 >= self.episode_steps
@@ -578,6 +583,7 @@ class ParamotorEnv:
                 state.episode_return,
                 failed.astype(jp.float32),
                 completed.astype(jp.float32),
+                *reasons.astype(jp.float32),         # ENDING_REASONS, in order
             ]
         )
         return state, reward, terminated, truncated, metrics
