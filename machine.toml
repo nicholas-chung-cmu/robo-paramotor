@@ -18,7 +18,7 @@ gpus = [0]
 # little speed. Fewer environments also shrink MuJoCo Warp's per-environment
 # Newton buffers (outside JAX), which caused the out-of-memory crashes.
 num_envs = 128
-# num_envs = 2048                  # RTX PRO 6000: ~2.2x the 5080's CUDA cores, 96 GB
+# num_envs = 512                   # RTX PRO 6000: per GPU; if steps/s is poor, try 1024 x 2048
 
 # Control steps (0.04 s each) every environment collects per PPO update.
 # Long enough to hold a whole flight at the early curriculum (150 m routes,
@@ -29,7 +29,8 @@ num_envs = 128
 # minibatches. GPU memory per update scales with the batch (~25 KB/sample at
 # peak), not with how it is split between the two.
 rollout_steps = 1024               # 41 s; batch 131,072 (as 1024 x 128 was)
-# rollout_steps = 1024             # RTX PRO 6000: batch ~2.1 M, ~52 GB peak in JAX
+# rollout_steps = 4096             # RTX PRO 6000: 164 s, nearly a whole 1 km route (~180 s);
+#                                  #   batch ~2.1 M, ~52 GB peak in JAX (~25 KB/sample)
 
 # How far an action is judged on what actually followed (not machine-specific,
 # but tied to rollout_steps). gamma: rewards count for about 0.04 s / (1 -
@@ -39,7 +40,7 @@ rollout_steps = 1024               # 41 s; batch 131,072 (as 1024 x 128 was)
 # targets themselves look 40 s ahead). Higher = less bias, more noise.
 gamma = 0.999                      # was 0.997
 gae_lambda = 0.99                  # was 0.95, then 0.98
-# gamma = 0.999                    # RTX PRO 6000
+# gamma = 0.9995                   # RTX PRO 6000: ~80 s horizon, to match the rollout
 # gae_lambda = 0.99                # RTX PRO 6000
 
 # Cap on the share of GPU memory JAX may take, 0-1, per program. It leaves
