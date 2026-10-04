@@ -1,64 +1,60 @@
-# Settings for THIS computer. Edit them when you move to a different machine;
-# nothing else in the repo needs to change. --num-envs, --rollout-steps and a
-# --config file still override them, and a resumed run keeps its own.
+# Settings for the computer this repo trains on. Edit them when you move to a
+# different machine; nothing else in the repo needs to change. --num-envs,
+# --rollout-steps and a --config file still override them, and a resumed run
+# keeps its own.
 #
-# Current values: 16 GB RTX 5080 (desktop on the same card), 8-strip canopy.
-# Commented guesses for 2x RTX PRO 6000 Blackwell Max-Q (96 GB each, one
-# machine) follow each setting; they are estimates scaled from the 5080's
-# measurements, not measured.
+# A git-ignored machine.local.toml next to this file overrides any of these on
+# one computer only (e.g. a smaller workstation) without changing the repo.
+#
+# Active values: 2x NVIDIA RTX PRO 6000 Blackwell Max-Q (96 GB each, one
+# machine). They are estimates scaled from a 16 GB RTX 5080's measurements,
+# not yet measured on that machine. The 5080's own (tested) values are
+# commented after each setting.
 
 # GPUs docker/train.sh may use (--gpus 0,1 overrides). Each training container
 # sees one GPU; --seeds K runs one worker per GPU in parallel, and each GPU
 # has its own lock (runs/.gpu<N>.lock).
-gpus = [0]
-# gpus = [0, 1]                    # RTX PRO 6000 x2
+gpus = [0, 1]
+# gpus = [0]                       # RTX 5080
 
-# Parallel training environments. Throughput on the 5080 barely grows past
-# ~512 (512 -> 2048 gave ~20% more steps/s), so fewer, longer rollouts cost
-# little speed. Fewer environments also shrink MuJoCo Warp's per-environment
-# Newton buffers (outside JAX), which caused the out-of-memory crashes.
-num_envs = 128
-# num_envs = 512                   # RTX PRO 6000: per GPU; if steps/s is poor, try 1024 x 2048
+# Parallel training environments, per GPU. Fewer environments with longer
+# rollouts cost little speed while the GPU stays busy; if steps/s is poor at
+# 512 on this card, try 1024 x 2048 (same batch and memory).
+num_envs = 512
+# num_envs = 128                   # RTX 5080 (throughput saturates near 512 there)
 
 # Control steps (0.04 s each) every environment collects per PPO update.
-# Long enough to hold a whole flight at the early curriculum (150 m routes,
-# ~30 s; failures ~20 s in), so advantages see real outcomes rather than the
-# critic's guess past a short cut-off. Later routes (up to 1 km, ~3 min) are
-# longer than any rollout; the critic covers the remainder.
-# Batch per update = num_envs * rollout_steps; it must divide into the 32 PPO
-# minibatches. GPU memory per update scales with the batch (~25 KB/sample at
-# peak), not with how it is split between the two.
-rollout_steps = 1024               # 41 s; batch 131,072 (as 1024 x 128 was)
-# rollout_steps = 4096             # RTX PRO 6000: 164 s, nearly a whole 1 km route (~180 s);
-#                                  #   batch ~2.1 M, ~52 GB peak in JAX (~25 KB/sample)
+# 4096 = 164 s, nearly a whole 1 km route (~180 s), so advantages see what
+# actually followed rather than the critic's guess past a short cut-off.
+# Batch per update = num_envs * rollout_steps (~25 KB/sample at JAX's peak);
+# it must divide into the 32 PPO minibatches.
+rollout_steps = 4096               # batch ~2.1 M, ~52 GB peak in JAX
+# rollout_steps = 1024             # RTX 5080: 41 s, batch 131,072
 
-# How far an action is judged on what actually followed (not machine-specific,
-# but tied to rollout_steps). gamma: rewards count for about 0.04 s / (1 -
-# gamma) ahead (0.997 = 13 s, 0.999 = 40 s). gae_lambda: real rewards are
-# weighted by (gamma * lambda) per step before the critic's estimate takes
-# over (0.997 * 0.98 fades in ~2 s; 0.999 * 0.99 in ~4 s, and the critic's
-# targets themselves look 40 s ahead). Higher = less bias, more noise.
-gamma = 0.999                      # was 0.997
-gae_lambda = 0.99                  # was 0.95, then 0.98
-# gamma = 0.9995                   # RTX PRO 6000: ~80 s horizon, to match the rollout
-# gae_lambda = 0.99                # RTX PRO 6000
+# How far an action is judged on what actually followed. gamma: rewards count
+# for about 0.04 s / (1 - gamma) ahead (0.999 = 40 s, 0.9995 = 80 s).
+# gae_lambda: real rewards are weighted by (gamma * lambda) per step before
+# the critic's estimate takes over. Higher = less bias, more noise.
+gamma = 0.9995                     # ~80 s, to match the rollout
+gae_lambda = 0.99
+# gamma = 0.999                    # RTX 5080
+# gae_lambda = 0.99                # RTX 5080
 
 # Cap on the share of GPU memory JAX may take, 0-1, per program. It leaves
-# room for MuJoCo Warp's physics buffers (allocated outside JAX) and for the
-# desktop; on this machine a GPU out-of-memory has crashed the NVIDIA driver.
-# Delete a line for no cap.
-jax_memory_fraction = 0.4          # training, evaluation, tests (6.6 GB)
-watcher_memory_fraction = 0.1      # the --headed watcher window
-# jax_memory_fraction = 0.7        # RTX PRO 6000: 67 GB for JAX; Warp needs ~1 GB at 512 envs
-# watcher_memory_fraction = 0.03
+# room for MuJoCo Warp's physics buffers (allocated outside JAX; ~1 GB at 512
+# envs) and for a desktop if one shares the card. On the 5080 desktop a GPU
+# out-of-memory crashed the NVIDIA driver. Delete a line for no cap.
+jax_memory_fraction = 0.7          # 67 GB of 96 GB
+watcher_memory_fraction = 0.03     # the --headed watcher window
+# jax_memory_fraction = 0.4        # RTX 5080: 6.6 GB of 16.6 GB
+# watcher_memory_fraction = 0.1    # RTX 5080
 
 # How MuJoCo Warp uses CUDA graphs (mujoco.mjx.warp.types.GraphMode): WARP
 # (MJX's default on a GPU: capture and replay while buffer addresses match),
 # WARP_STAGED / WARP_STAGED_EX (copy through fixed staging buffers so one graph
 # is always replayed), JAX (JAX captures it as part of its own graph), NONE.
-# Which is fastest is machine-specific: benchmark with runs/tools/bench_graph.py.
+# Which is fastest is machine-specific: benchmark before long runs.
 warp_graph_mode = "WARP"
-# warp_graph_mode = "WARP"         # RTX PRO 6000: benchmark there too
 
 # Two GPUs: a single training run uses one GPU (there is no data-parallel
 # training across cards). Use both by running seeds in parallel:

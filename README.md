@@ -31,7 +31,9 @@ docker/train.sh --compare base high_lr        # rliable comparison -> runs/compa
 docker/train.sh --finish first                # finish an interrupted run (crashed runs also retry on their own)
 ```
 
-Per-computer settings live in [machine.toml](machine.toml) at the repo root: the
+Per-computer settings live in [machine.toml](machine.toml) at the repo root (set
+for 2x RTX PRO 6000; a git-ignored `machine.local.toml` overrides any of them on
+one computer, e.g. a 16 GB workstation). They cover the
 default number of training environments and the caps on JAX's GPU memory. Edit
 it when you move to a different machine, including which GPUs to use (`gpus`).
 `docker/train.sh` runs one GPU job per GPU (`runs/.gpu<N>.lock`); a job that

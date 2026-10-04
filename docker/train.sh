@@ -82,11 +82,12 @@ else
   docker build -q -f docker/Dockerfile -t "$IMAGE" --build-arg JAX_CUDA="$JAX_CUDA" . >/dev/null
 fi
 
-# GPUs to use: --gpus 0,1, else machine.toml's `gpus` list, else GPU 0. Each
+# GPUs to use: --gpus 0,1, else the `gpus` list in machine.toml (or a
+# machine.local.toml override), else GPU 0. Each
 # container sees exactly ONE of them (as its device 0), so the training code
 # needs no multi-GPU support: --seeds runs one worker per GPU in parallel.
 if [[ -z "$GPU_ARG" ]]; then
-  GPU_ARG=$(python3 -c 'import tomllib; print(",".join(map(str, tomllib.load(open("machine.toml", "rb")).get("gpus", [0]))))' 2>/dev/null || echo 0)
+  GPU_ARG=$(python3 -m rl.machine gpus 2>/dev/null || echo 0)
 fi
 IFS=, read -r -a GPUS <<< "$GPU_ARG"
 GPU_DEVICE="${GPUS[0]}"   # the GPU in_container uses; workers set their own
