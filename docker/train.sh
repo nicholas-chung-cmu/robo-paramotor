@@ -14,6 +14,7 @@
 #   docker/train.sh --name first --episodes 100      # 100 evaluation flights per route
 #   docker/train.sh --test                           # run the test suite in the image
 #   docker/train.sh --test tests/test_rl.py -k gps   # any pytest arguments after --test
+#   docker/train.sh --name first --retries 5         # retry a crashed run up to 5 times (default 3)
 #   docker/train.sh --name first --headed            # train + a window replaying, for every
 #                                                    # new checkpoint, its best of 32 flights
 #   docker/train.sh --watch first                    # that window for a run already training
@@ -40,13 +41,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 NAME="ppo-$(date +%Y%m%d-%H%M%S)"
-CPU=0 RESUME=0 SMOKE=0 SEEDS=1 SEED=0 EPISODES=20 MODE=train HEADED=0 VERBOSE=0
+CPU=0 RESUME=0 SMOKE=0 SEEDS=1 SEED=0 EPISODES=20 MODE=train HEADED=0 VERBOSE=0 RETRIES=3
 TARGETS=() TRAIN_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name)      NAME="$2"; shift 2 ;;
     --cpu)       CPU=1; shift ;;
     --resume)    RESUME=1; shift ;;
+    --retries)   RETRIES="$2"; shift 2 ;;
     --smoke)     SMOKE=1; TRAIN_ARGS+=("$1"); shift ;;
     --seeds)     SEEDS="$2"; shift 2 ;;
     --seed)      SEED="$2"; shift 2 ;;
@@ -129,9 +131,12 @@ esac
 
 [[ $SMOKE -eq 1 ]] && EPISODES=1
 
-# Train one seed into $1.
+# Train one seed into $1. If training crashes (out of GPU memory, a killed
+# container, NaNs), retry up to $RETRIES attempts in all: resume from the last
+# checkpoint (saved every 5 updates by default) and --finish the original
+# target, or start over if no checkpoint was written yet.
 train_one() {
-  local run="$1" seed="$2" extra=()
+  local run="$1" seed="$2" extra=() attempt=1 status
   mkdir -p "$run"
   if [[ $RESUME -eq 1 ]]; then
     [[ -f "$run/checkpoint.pkl" ]] || { echo "train.sh: no $run/checkpoint.pkl to resume" >&2; exit 1; }
@@ -140,8 +145,24 @@ train_one() {
     extra=(--seed "$seed")
   fi
   echo "== [1/3] training seed $seed -> $run   (watch: tail -f $run/train.log)"
-  in_container python -m rl.train --output "$run" "${extra[@]}" \
-    ${TRAIN_ARGS[@]+"${TRAIN_ARGS[@]}"} 2>&1 | tee -a "$run/train.log"
+  while true; do
+    status=0
+    in_container python -m rl.train --output "$run" "${extra[@]}" \
+      ${TRAIN_ARGS[@]+"${TRAIN_ARGS[@]}"} 2>&1 | tee -a "$run/train.log" || status=$?
+    [[ $status -eq 0 ]] && return 0
+    if (( attempt >= RETRIES )); then
+      echo "== training failed (exit $status) on attempt $attempt of $RETRIES; giving up" | tee -a "$run/train.log"
+      exit "$status"
+    fi
+    attempt=$((attempt + 1))
+    if [[ -f "$run/checkpoint.pkl" ]]; then
+      extra=(--resume "$run/checkpoint.pkl" --finish)
+      echo "== training failed (exit $status); retry $attempt of $RETRIES from the last checkpoint in 30 s" | tee -a "$run/train.log"
+    else
+      echo "== training failed (exit $status) before a checkpoint; retry $attempt of $RETRIES from scratch in 30 s" | tee -a "$run/train.log"
+    fi
+    sleep 30
+  done
 }
 
 if [[ $HEADED -eq 1 ]]; then

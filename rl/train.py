@@ -44,7 +44,7 @@ class PPOConfig:
     initial_log_std: float = -3.0  # pre-tanh action noise std 0.05: almost none at the start
     max_grad_norm: float = 0.5
     eval_every: int = 25
-    checkpoint_every: int = 25
+    checkpoint_every: int = 5  # a crash or retry loses at most this many updates
     # The critic also sees ground truth the vehicle cannot measure (canopy shape
     # and attitude, true airspeed, route error; ParamotorEnv._privileged). It is
     # used only in training, so the deployed policy stays sensor-only.
@@ -261,9 +261,10 @@ def gpu_memory():
 
 
 def save_checkpoint(
-    path, learner, env_cfg, ppo_cfg, update, difficulty, key, env_steps
+    path, learner, env_cfg, ppo_cfg, update, difficulty, key, env_steps, end_update
 ):
     payload = dict(
+        end_update=end_update,  # the run's target; --finish resumes to it
         params=jax.device_get(learner.params),
         opt_state=jax.device_get(learner.opt_state),
         train_step=int(learner.step),
@@ -336,6 +337,12 @@ def main():
     )
     ap.add_argument("--output", type=Path, default=Path("runs/ppo"))
     ap.add_argument("--resume", type=Path)
+    ap.add_argument(
+        "--finish",
+        action="store_true",
+        help="with --resume: train to the checkpoint's original target update "
+             "(what docker/train.sh does when it retries a crashed run)",
+    )
     ap.add_argument("--num-envs", type=int)
     ap.add_argument("--updates", type=int)
     ap.add_argument("--rollout-steps", type=int)
@@ -397,6 +404,19 @@ def main():
     key, nk, rk = jax.random.split(key, 3)
     critic_size = env.obs_size + (env.privileged_size if pc.asymmetric_critic else 0)
     params = network.init(nk, jp.zeros(env.obs_size), jp.zeros(critic_size))
+    # Updates are counted absolutely, so a resumed or retried run continues the
+    # learning-rate and entropy schedules instead of restarting them.
+    start_update = saved["update"] if saved else 0
+    if args.finish:
+        if not saved or "end_update" not in saved:
+            ap.error("--finish needs --resume with a checkpoint that records its target")
+        end_update = saved["end_update"]
+    else:
+        end_update = start_update + pc.updates
+    pc.updates = end_update - start_update
+    if pc.updates <= 0:
+        print(f"Already at update {start_update} of {end_update}; nothing to train.", flush=True)
+        return
     learner = TrainState.create(
         apply_fn=network.apply,
         params=params,
@@ -404,7 +424,7 @@ def main():
             optax.clip_by_global_norm(pc.max_grad_norm),
             optax.adam(optax.linear_schedule(
                 pc.learning_rate, pc.learning_rate_final,
-                pc.updates * pc.epochs * pc.minibatches)),
+                end_update * pc.epochs * pc.minibatches)),
         ),
     )
     learner = learner.replace(step=jp.array(0, jp.int32))
@@ -493,8 +513,8 @@ def main():
         for iteration in range(start, start + pc.updates):
             begin = time.monotonic()
             (states, key), batch = rollout(learner.params, states, key, difficulty)
-            # Entropy bonus decays linearly to 0 over this run's updates.
-            entropy_coef = pc.entropy * max(0.0, 1.0 - (iteration - start) / pc.updates)
+            # Entropy bonus decays linearly to 0 at the run's target update.
+            entropy_coef = pc.entropy * max(0.0, 1.0 - iteration / end_update)
             learner, key, loss = update(learner, key, batch, jp.float32(entropy_coef))
             loss = np.asarray(loss)
             if not np.all(np.isfinite(loss)):
@@ -576,6 +596,7 @@ def main():
                     difficulty,
                     key,
                     env_steps,
+                    end_update,
                 )
     memory_file.close()
     endings_file.close()
