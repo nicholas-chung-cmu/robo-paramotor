@@ -141,14 +141,19 @@ FLEX_SOLREF = "0.004 1"       # edge-length constraint: stiff, critically damped
 # SAIL PROFILE. The skin is a closed airfoil section: a NACA 4-digit section's
 # surface, laid off along the arch's outward normal, running from the trailing
 # edge forward along the underside, round the leading edge, then aft over the
-# top and back to the trailing edge, where it closes on itself. It is still ONE
-# skin with nothing inside it: no ribs and no internal pressure.
+# top and back to the trailing edge, where it closes on itself.
+#
+# RIBS. Every span row carries a flat internal RIB across the section: a
+# separate flex with edge-length constraints and NO bending, joining upper and
+# lower stations as a ladder of triangles. A rib-less closed skin cannot hold
+# an airfoil (no internal pressure either): with correct section aerodynamics
+# it collapses in flight. The ribs make each section rigid in its own plane;
+# the wing still flexes spanwise, between rows.
 #
 # TIPS. Toward each tip the section thins elliptically, over the outer
 # TIP_ROUND of the half-span, to TIP_MIN of its thickness, so the wing rounds
-# off. Each end is closed by a flat END PLATE across the tip section: a
-# separate flex with edge-length constraints and NO bending. The thickness
-# deliberately stops short of zero. Folding the upper surface onto the lower
+# off; the tip rows' ribs close the wing ends. The thickness deliberately
+# stops short of zero. Folding the upper surface onto the lower
 # makes a 180-degree crease in the bending skin, where MuJoCo's flex bending
 # (not stress-free on curved rest shapes) put ~0.7 N on 24 mg tip vertices and
 # the simulation went to NaN.
@@ -157,6 +162,13 @@ SAIL_CAMBER_POS = 0.4         # its position, fraction of chord from the LE
 SAIL_THICKNESS = 0.15         # section thickness, fraction of chord
 TIP_ROUND = 0.4               # outer fraction of each half-span that rounds off
 TIP_MIN = 0.35                # thickness at the tips, fraction of the inboard section
+# RIGGING. The whole canopy is pitched nose-down by RIG_NOSE_DOWN about the
+# centre-row A-line point (the line lengths follow from the pitched shape).
+# This sets the wing's trim angle of attack. Trim study (runs/tools/trim.py):
+# 4-6 deg glides best (L/D 2.6-2.7) but deep-stalls under power; 10 deg glides
+# at L/D 2.2 and cruises near level at 0.8 N (4.5 m/s, sink 0.55 m/s). Above
+# ~1.5 N the propeller torque rolls every setting into a spiral.
+RIG_NOSE_DOWN = math.radians(10.0)
 A_FRAC = 0.5 - 0.060 / CHORD  # A line row, fraction of chord from the LE (0.194)
 B_FRAC = 0.5 + 0.060 / CHORD  # B line row (0.806)
 # Chordwise vertex stations as (surface, fraction of chord from the LE), round
@@ -186,10 +198,10 @@ def tip_thickness(s: int) -> float:
     return TIP_MIN + (1 - TIP_MIN) * math.sqrt(max(0.0, 1 - e * e))
 
 
-def end_plate_elements():
-    """Triangles across the tip sections (grid indices), both tips. Upper and
-    lower stations at the same chord fraction are joined, so the plate is a
-    ladder of quads from a nose triangle to a trailing-edge triangle."""
+def rib_elements():
+    """Triangles across every row's section (grid indices). Upper and lower
+    stations at the same chord fraction are joined, so each rib is a ladder of
+    quads from a nose triangle to a trailing-edge triangle."""
     u = {f: k for k, (side, f) in enumerate(SAIL_STATIONS) if side == "u"}
     l = {f: k for k, (side, f) in enumerate(SAIL_STATIONS) if side == "l"}
     fs = sorted(l)                                 # lower fractions, nose to tail
@@ -198,7 +210,7 @@ def end_plate_elements():
         tri += [(u[f0], u[f1], l[f1]), (u[f0], l[f1], l[f0])]
     tri.append((u[fs[-1]], u[1.0], l[fs[-1]]))     # trailing edge
     out = []
-    for s in (0, N_SPAN - 1):
+    for s in range(N_SPAN):
         out += [s * N_CHORDWISE + c for t in tri for c in t]
     return out
 
@@ -378,7 +390,12 @@ def _vertex_pos(s: int, c: int, k: float):
     _, y, z = arc_pos(phi)
     x, h = section_point(*SAIL_STATIONS[c], tip_thickness(s))
     x, h = k * x, k * h
-    return x, y + h * math.sin(phi), Z_CANOPY + z + h * math.cos(phi)
+    # Rigging pitch about the centre A-line point (positive = nose down).
+    xa, _ = section_point("u", A_FRAC)
+    dx, dz = x - k * xa, z + h * math.cos(phi)
+    ca, sa = math.cos(RIG_NOSE_DOWN), math.sin(RIG_NOSE_DOWN)
+    return (k * xa + dx * ca + dz * sa, y + h * math.sin(phi),
+            Z_CANOPY - dx * sa + dz * ca)
 
 
 def _skin_area(k: float) -> float:
@@ -661,11 +678,11 @@ def build(tendon_ranges: dict | None = None, servo_mode: str = "position",
     A('      <contact contype="0" conaffinity="0" selfcollide="none"/>')
     A(f'      <elasticity young="{PEEK_E:.3e}" poisson="{PEEK_NU}" thickness="{PEEK_T:.3e}" elastic2d="bend"/>')
     A('    </flex>')
-    A('    <!-- End plates closing both wing tips: edge-length constraints only, no bending (see build_paramotor.py, TIPS). -->')
-    plate = end_plate_elements()
+    A('    <!-- Internal ribs at every span row (the tip rows close the wing ends): edge-length constraints only, no bending (see build_paramotor.py, RIBS). -->')
+    plate = rib_elements()
     used = sorted(set(plate))
     local = {g: k for k, g in enumerate(used)}
-    A('    <flex name="canopy_tips" dim="2" radius="0.0005" rgba="0.80 0.62 0.22 0.7"')
+    A('    <flex name="canopy_ribs" dim="2" radius="0.0005" rgba="0.80 0.62 0.22 0.7"')
     A(f'          body="{" ".join(vname(divmod(g, N_CHORDWISE)[0], divmod(g, N_CHORDWISE)[1]) for g in used)}"')
     A(f'          vertex="{" ".join(["0 0 0"] * len(used))}"')
     A(f'          element="{" ".join(str(local[g]) for g in plate)}">')
@@ -675,7 +692,7 @@ def build(tendon_ranges: dict | None = None, servo_mode: str = "position",
     A('')
     A('  <equality>')
     A(f'    <flex flex="canopy" solref="{FLEX_SOLREF}"/>')
-    A(f'    <flex flex="canopy_tips" solref="{FLEX_SOLREF}"/>')
+    A(f'    <flex flex="canopy_ribs" solref="{FLEX_SOLREF}"/>')
     A('  </equality>')
     A('')
 

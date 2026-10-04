@@ -56,6 +56,17 @@ def set_airspeed(m, d, v_world):
     A.set_linear_velocity(m, d, v_world)
 
 
+def trim_velocity(aero, V=6.0, alpha=math.radians(6.0), vlat=0.0):
+    """World velocity that gives the RIGGED wing, at its design pose, section
+    incidence `alpha`: the canopy is pitched nose-down by its rigging, so
+    level flight at the design pose would be a negative angle of attack."""
+    P = aero.mesh.lifting(aero.mesh.rest)
+    chord = (P[:, 0] - P[:, -1]).mean(axis=0)
+    pitch = math.atan2(chord[2], math.hypot(chord[0], chord[1]))
+    gamma = alpha - pitch                     # descent angle of the flight path
+    return np.array([V * math.cos(gamma), vlat, -V * math.sin(gamma)])
+
+
 def skin_force(aero):
     """Total aerodynamic force on the canopy skin (sum over its vertices)."""
     return aero.wrench[aero.mesh.bodies, :3].sum(axis=(0, 1))
@@ -234,7 +245,7 @@ def test_lift_actually_supports_it():
     come out comparable to weight.  Not a trim test -- a scale test."""
     m, d = load()
     aero = A.ParamotorAero(m, PP.PEEK_1M)
-    set_airspeed(m, d, [6.0, 0.0, 0.0])
+    set_airspeed(m, d, trim_velocity(aero))
     mujoco.mj_forward(m, d)
     aero(m, d)
     W = m.body_subtreemass[0] * 9.81
@@ -323,14 +334,14 @@ def _free_flight(thrust, km_kt=None, T=12.0, mode="strip"):
         mujoco.set_mjcb_passive(None)
 
 
-def _probe(omega=(0., 0, 0), vlat=0.0, mode="strip", V=6.0):
+def _probe(omega=(0., 0, 0), vlat=0.0, mode="strip", V=6.0, alpha=math.radians(6.0)):
     """Hold the skin in a prescribed rigid motion about its mass centre and
     read the total aerodynamic force and moment about that centre."""
     m, d = load()
     aero = A.ParamotorAero(m, PP.PEEK_1M, mode=mode)
     mesh = aero.mesh
     w = np.array(omega, float)
-    vcom = np.array([V, vlat, 0.0])
+    vcom = trim_velocity(aero, V, alpha, vlat)
     P = mesh.rest
     c = (mesh.mass[..., None] * P).sum(axis=(0, 1)) / mesh.mass.sum()
     set_airspeed(m, d, vcom)
@@ -344,33 +355,45 @@ def _probe(omega=(0., 0, 0), vlat=0.0, mode="strip", V=6.0):
 
 
 def test_strip_matches_first_principles():
-    """The implementation check: recompute every cell force independently from
-    the vertex states and compare.  Validates the cell frames, the velocity
-    field, both frame conversions and the arch recovery in one shot."""
-    p = PP.PEEK_1M
+    """The implementation check: recompute every strip's force independently
+    from the vertex states and compare, cell by cell. Validates the section
+    frames (chord line), the strip velocity, the stall blend, the load split
+    along the chord, both frame conversions and the arch recovery in one shot."""
+    p = dict(PP.PEEK_1M)
     _, _, aero, m, d = _probe(omega=(0.7, 0.0, 0.0))
     mesh = aero.mesh
-    P, Vv = d.xpos[mesh.bodies], d.qvel[mesh.dof]
-    S, C = mesh.shape
+    P = mesh.lifting(d.xpos[mesh.bodies])
+    Vv = mesh.lifting(d.qvel[mesh.dof])
+    S, C = P.shape[:2]
+    flip = np.array([1.0, -1.0, -1.0])
     worst = 0.0
     for s in range(S - 1):
+        a, b, cc, dd = P[s, 0], P[s + 1, 0], P[s, -1], P[s + 1, -1]   # LE, LE, TE, TE
+        fwd, span = (a + b - cc - dd) / 2, (b + dd - a - cc) / 2
+        z = np.cross(fwd, span); z /= np.linalg.norm(z)
+        x = fwd - (fwd @ z) * z; x /= np.linalg.norm(x)
+        R = np.column_stack((x, np.cross(z, x), z))
+        corners = lambda c: [(s, c), (s + 1, c), (s, c + 1), (s + 1, c + 1)]
+        area = np.array([0.5 * np.linalg.norm(np.cross(P[s + 1, c + 1] - P[s, c], P[s + 1, c] - P[s, c + 1]))
+                         for c in range(C - 1)])
+        v = sum(area[c] * np.mean([Vv[i] for i in corners(c)], axis=0) for c in range(C - 1)) / area.sum()
+        vp = (R.T @ v) * flip
+        V = np.linalg.norm(vp)
+        raw = math.atan2(vp[2], vp[0])
+        al = np.clip(raw, p["alpha_min"], p["alpha_max"])
+        t = np.clip(max(raw - p["alpha_max"], p["alpha_min"] - raw) / p["stall_width"], 0, 1)
+        sb = t * t * (3 - 2 * t)
+        CL = (1 - sb) * (p["CL0"] + p["CLa"] * al) * aero.arch_recovery + sb * math.sin(2 * raw)
+        CD = (1 - sb) * (p["CD0"] + p["CDa"] * al * al) + sb * (p["CD0"] + 2 * math.sin(raw) ** 2)
+        f = 0.5 * p["rho"] * area.sum() * V * (CL * np.array([vp[2], 0.0, -vp[0]]) - CD * vp)
+        F = R @ (f * flip)
+        le, te = (a + b) / 2, (cc + dd) / 2
+        frac = np.array([np.mean([P[i] for i in corners(c)], axis=0) for c in range(C - 1)])
+        xc = np.clip(1 - (frac - le) @ (te - le) / ((te - le) @ (te - le)), 0, 1)
+        load = area * xc ** (1 / p["strip_cp"] - 2)
+        load /= load.sum()
         for c in range(C - 1):
-            k = [(s, c), (s + 1, c), (s, c + 1), (s + 1, c + 1)]
-            a, b, cc, dd = (P[i] for i in k)
-            fwd = (a + b - cc - dd) / 2
-            span = (b + dd - a - cc) / 2
-            z = np.cross(fwd, span); z /= np.linalg.norm(z)
-            x = fwd - (fwd @ z) * z; x /= np.linalg.norm(x)
-            R = np.column_stack((x, np.cross(z, x), z))
-            area = 0.5 * np.linalg.norm(np.cross(dd - a, b - cc))
-            vp = (R.T @ np.mean([Vv[i] for i in k], axis=0)) * np.array([1.0, -1.0, -1.0])
-            V = np.linalg.norm(vp)
-            al = np.clip(math.atan2(vp[2], vp[0]), p["alpha_min"], p["alpha_max"])
-            CL = (p["CL0"] + p["CLa"] * al) * aero.arch_recovery
-            CD = p["CD0"] + p["CDa"] * al * al
-            f = 0.5 * p["rho"] * area * V * (CL * np.array([vp[2], 0.0, -vp[0]]) - CD * vp)
-            worst = max(worst, np.linalg.norm(
-                R @ (f * np.array([1.0, -1.0, -1.0])) - aero.last["f_cells"][s, c]))
+            worst = max(worst, np.linalg.norm(load[c] * F - aero.last["f_cells"][s, c]))
     check("strip forces match first principles exactly", worst < 1e-12,
           f"worst cell error {worst:.2e} N over {(S - 1) * (C - 1)} cells")
 
@@ -382,7 +405,7 @@ def test_canopy_reference_state():
     _, _, aero, m, d = _probe(omega=w, vlat=0.4)
     com, vbar, omega, _ = aero.canopy_state(d)
     check("canopy reference velocity and rate match the prescribed motion",
-          np.allclose(vbar, [6.0, 0.4, 0.0], atol=1e-12) and np.allclose(omega, w, atol=1e-12),
+          np.allclose(vbar, trim_velocity(aero, vlat=0.4), atol=1e-12) and np.allclose(omega, w, atol=1e-12),
           f"velocity {vbar}, rate {omega}")
 
 
@@ -426,8 +449,10 @@ def test_arch_recovery():
           abs(proj - 0.797) < 0.01,
           f"canopy projects {proj:.4f} of its area (generator: 0.7970), "
           f"recovery factor {aero.arch_recovery:.4f}")
-    _, F_s, _, _, _ = _probe(mode="strip")
-    _, F_l, _, _, _ = _probe(mode="lumped")
+    # At zero incidence, as the normalization is defined: at an angle of attack
+    # the arched tips genuinely see less incidence than the lumped model.
+    _, F_s, _, _, _ = _probe(mode="strip", alpha=0.0)
+    _, F_l, _, _, _ = _probe(mode="lumped", alpha=0.0)
     check("strip and lumped agree on total lift", abs(F_s[2] - F_l[2]) / abs(F_l[2]) < 0.01,
           f"strip {-F_s[2]:.4f} N vs lumped {-F_l[2]:.4f} N")
 

@@ -34,11 +34,14 @@ class PPOConfig:
     epochs: int = 4
     minibatches: int = 32  # 16,384-sample minibatches at 4096 envs: 128 gradient steps per update
     hidden_size: int = 128
-    learning_rate: float = 3e-4
+    learning_rate: float = 3e-4  # annealed linearly to learning_rate_final over training
+    learning_rate_final: float = 3e-5
     gamma: float = 0.997  # ~13 s effective horizon at 25 Hz
     gae_lambda: float = 0.95
     clip: float = 0.2
-    entropy: float = 0.001
+    value_clip: float = 1.0  # value-loss clip, in return units (not the policy's 0.2)
+    entropy: float = 0.001   # bonus at the start, decayed linearly to 0 over training
+    initial_log_std: float = -3.0  # pre-tanh action noise std 0.05: almost none at the start
     max_grad_norm: float = 0.5
     eval_every: int = 25
     checkpoint_every: int = 25
@@ -51,6 +54,7 @@ class PPOConfig:
 class ActorCritic(nn.Module):
     hidden_size: int = 128
     thrust_bias: float = 0.693  # default only; main() sets it from initial_thrust / thrust_max
+    initial_log_std: float = -0.7  # default only; main() passes PPOConfig.initial_log_std
 
     @nn.compact
     def __call__(self, obs, critic_obs=None):
@@ -64,12 +68,14 @@ class ActorCritic(nn.Module):
         actor = obs
         for i in range(2):
             actor = nn.tanh(nn.Dense(self.hidden_size, name=f"Dense_{2 * i}")(actor))
-        # Begin near cruise with mostly released brakes, not both brakes at 50%.
-        bias = lambda key, shape, dtype: jp.array([self.thrust_bias, -2.0, -2.0], dtype)
+        # Begin near cruise with brakes released: actions are [thrust, brake,
+        # diff]; brake tanh(-2) is ~2% and diff 0 is no differential. (diff
+        # was -2 here, i.e. nearly full LEFT brake, a steep left spiral.)
+        bias = lambda key, shape, dtype: jp.array([self.thrust_bias, -2.0, 0.0], dtype)
         mean = nn.Dense(
             3, kernel_init=nn.initializers.orthogonal(0.01), bias_init=bias, name="Dense_4"
         )(actor)
-        log_std = self.param("log_std", nn.initializers.constant(-0.7), (3,))
+        log_std = self.param("log_std", nn.initializers.constant(self.initial_log_std), (3,))
         if critic_obs is None:
             value = jp.zeros(obs.shape[:-1])
         else:
@@ -171,7 +177,7 @@ def make_update(network, cfg):
     if total % cfg.minibatches:
         raise ValueError("rollout batch must divide evenly into minibatches")
 
-    def loss(params, batch):
+    def loss(params, batch, entropy_coef):
         obs, critic_obs, latent, old_logp, old_value, adv, target = batch
         mean, log_std, value = network.apply(params, obs, critic_obs)
         logp = log_probability(latent, mean, log_std)
@@ -179,18 +185,19 @@ def make_update(network, cfg):
         actor = -jp.mean(
             jp.minimum(ratio * adv, jp.clip(ratio, 1 - cfg.clip, 1 + cfg.clip) * adv)
         )
-        clipped = old_value + jp.clip(value - old_value, -cfg.clip, cfg.clip)
+        clipped = old_value + jp.clip(value - old_value, -cfg.value_clip, cfg.value_clip)
         critic = 0.5 * jp.mean(
             jp.maximum((value - target) ** 2, (clipped - target) ** 2)
         )
         # Base-normal entropy encourages exploration; action bounds use tanh.
         entropy = jp.sum(log_std + 0.5 * np.log(2 * np.pi * np.e))
         kl = jp.mean((ratio - 1) - (logp - old_logp))
-        return actor + 0.5 * critic - cfg.entropy * entropy, jp.array(
-            [actor, critic, entropy, kl]
+        clip_fraction = jp.mean(jp.abs(ratio - 1) > cfg.clip)
+        return actor + 0.5 * critic - entropy_coef * entropy, jp.array(
+            [actor, critic, entropy, kl, clip_fraction]
         )
 
-    def update(learner, key, transitions):
+    def update(learner, key, transitions, entropy_coef):
         obs, latent, logp, value, reward, nv, term, trunc, _, critic_obs = transitions
         adv, target = advantages(
             reward, value, nv, term, trunc, cfg.gamma, cfg.gae_lambda
@@ -211,7 +218,7 @@ def make_update(network, cfg):
 
             def minibatch(learner, batch):
                 (_, metrics), grads = jax.value_and_grad(loss, has_aux=True)(
-                    learner.params, batch
+                    learner.params, batch, entropy_coef
                 )
                 return learner.apply_gradients(grads=grads), metrics
 
@@ -385,7 +392,7 @@ def main():
     env = ParamotorEnv(ec)
     # Initial mean thrust = the env's initial thrust, wherever thrust_max sits.
     thrust_bias = float(np.arctanh(np.clip(2 * ec.initial_thrust / ec.thrust_max - 1, -0.99, 0.99)))
-    network = ActorCritic(pc.hidden_size, thrust_bias)
+    network = ActorCritic(pc.hidden_size, thrust_bias, pc.initial_log_std)
     key = jax.random.PRNGKey(pc.seed)
     key, nk, rk = jax.random.split(key, 3)
     critic_size = env.obs_size + (env.privileged_size if pc.asymmetric_critic else 0)
@@ -394,7 +401,10 @@ def main():
         apply_fn=network.apply,
         params=params,
         tx=optax.chain(
-            optax.clip_by_global_norm(pc.max_grad_norm), optax.adam(pc.learning_rate)
+            optax.clip_by_global_norm(pc.max_grad_norm),
+            optax.adam(optax.linear_schedule(
+                pc.learning_rate, pc.learning_rate_final,
+                pc.updates * pc.epochs * pc.minibatches)),
         ),
     )
     learner = learner.replace(step=jp.array(0, jp.int32))
@@ -483,7 +493,9 @@ def main():
         for iteration in range(start, start + pc.updates):
             begin = time.monotonic()
             (states, key), batch = rollout(learner.params, states, key, difficulty)
-            learner, key, loss = update(learner, key, batch)
+            # Entropy bonus decays linearly to 0 over this run's updates.
+            entropy_coef = pc.entropy * max(0.0, 1.0 - (iteration - start) / pc.updates)
+            learner, key, loss = update(learner, key, batch, jp.float32(entropy_coef))
             loss = np.asarray(loss)
             if not np.all(np.isfinite(loss)):
                 raise FloatingPointError("Nonfinite PPO update")
@@ -510,7 +522,7 @@ def main():
                     metrics[:, :, 3].mean(),
                     ended,
                     finished,
-                    *loss,
+                    *loss[:4],  # clip fraction is printed, not in metrics.csv
                     difficulty,
                     speed,
                 ]
@@ -526,7 +538,7 @@ def main():
             if args.verbose:
                 print(
                     f"    ppo: policy_loss={loss[0]:+.4f} value_loss={loss[1]:.4f} "
-                    f"entropy={loss[2]:.3f} approx_kl={loss[3]:.5f} | altitude_err="
+                    f"entropy={loss[2]:.3f} approx_kl={loss[3]:.5f} clip_frac={loss[4]:.3f} | altitude_err="
                     f"{metrics[:,:,1].mean():.2f} m outside_alpha={metrics[:,:,3].mean():.1%} | "
                     f"episodes_ended={int(ended)} finished_return={finished:.1f} "
                     f"({', '.join(f'{n} {c}' for n, c in zip((*ENDING_REASONS, 'completed', 'time_limit'), causes) if c)}) | "

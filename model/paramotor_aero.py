@@ -334,11 +334,20 @@ def strip_cells(P, V, p, xp=np):
     Returns (forces (S-1, C-1, 3), alpha_used, alpha_raw, R, area), with the
     per-strip angles and section frames broadcast to every cell; alpha_used is
     the clipped angle (used by the pure moments and diagnostics)."""
-    _, area, _ = cell_frames(P, xp)
+    _, area, centre = cell_frames(P, xp)
     chord = xp.stack((P[:, 0], P[:, -1]), axis=1)          # (S, 2, 3) LE, TE
     R_sec = cell_frames(chord, xp)[0][:, 0]                # (S-1, 3, 3)
     weight = area / xp.maximum(area.sum(axis=1, keepdims=True), 1e-12)
     v_strip = (weight[..., None] * cell_mean(V)).sum(axis=1)
+    # Where along the chord the strip's force acts: each cell's share is its
+    # area times (1 - x/c)^n, x its position along the strip's chord line,
+    # which puts the centre of pressure at strip_cp of the chord (n = 1/cp - 2;
+    # 0.5 = uniform by area, 0.25 = an airfoil's quarter chord).
+    le = 0.5 * (chord[:-1, 0, None] + chord[1:, 0, None])
+    te = 0.5 * (chord[:-1, 1, None] + chord[1:, 1, None])
+    x = _dot(centre - le, te - le, xp) / xp.maximum(_dot(te - le, te - le, xp), 1e-12)
+    load = area * xp.clip(1.0 - x, 0.0, 1.0) ** (1.0 / p["strip_cp"] - 2.0)
+    load = load / xp.maximum(load.sum(axis=1, keepdims=True), 1e-12)
     v_local = to_local(R_sec, v_strip, xp) * FLIP
     speed = xp.sqrt(_dot(v_local, v_local, xp))
     u, w = v_local[..., 0], v_local[..., 2]
@@ -353,7 +362,7 @@ def strip_cells(P, V, p, xp=np):
     f = (0.5 * p["rho"] * area.sum(axis=1) * speed)[..., None] * (
         cl[..., None] * lift - cd[..., None] * v_local)
     f = xp.where((speed > _EPS_V)[..., None], f, 0.0)
-    forces = weight[..., None] * to_world(R_sec, f * FLIP, xp)[:, None, :]
+    forces = load[..., None] * to_world(R_sec, f * FLIP, xp)[:, None, :]
     shape = area.shape
     return (forces, xp.broadcast_to(alpha[:, None], shape),
             xp.broadcast_to(alpha_raw[:, None], shape),
@@ -455,7 +464,8 @@ class ParamotorAero:
         ch, sh = math.cos(self.p["chi"]), math.sin(self.p["chi"])
         self.T_BP = np.array([[ch, 0.0, sh], [0.0, 1.0, 0.0], [-sh, 0.0, ch]])
 
-        R, area, _ = cell_frames(self.mesh.lifting(self.mesh.rest))
+        rest = self.mesh.lifting(self.mesh.rest)
+        _, _, _, R, area = strip_cells(rest, np.zeros_like(rest), self.p)
         self.cell_area = area
         self.arch_recovery = self._arch_recovery(R, area)
         self.p.setdefault("strip_cl_scale", self.arch_recovery)
@@ -479,16 +489,21 @@ class ParamotorAero:
 
     @staticmethod
     def _arch_recovery(R, area):
-        """sum(A_i) / sum(A_i * n_i.zhat) for the skin at its rest shape.
+        """sum(A_i) / sum(A_i * n_i.nbar) for the wing at its rest shape.
 
-        Cell lift follows each cell's normal. This factor normalizes the
-        straight-flow vertical lift to the lumped whole-wing coefficient model
-        (~1.25 for the arch). The paper supplies whole-wing coefficients, not
-        section polars or an arch correction, so this is a provisional
-        normalization, fixed at the design shape. Pass strip_cl_scale
-        explicitly in the parameter set to override.
+        R and area are the strips' section frames and areas (strip_cells).
+        Strip lift follows each section's normal; nbar is their area-weighted
+        mean, so the factor measures the arch alone, not the rigging pitch.
+        It normalizes the straight-flow lift to the lumped whole-wing
+        coefficient model (~1.25 for the arch). The paper supplies whole-wing
+        coefficients, not section polars or an arch correction, so this is a
+        provisional normalization, fixed at the design shape. Pass
+        strip_cl_scale explicitly in the parameter set to override.
         """
-        proj = float((area * R[..., 2, 2]).sum() / area.sum())
+        n = R[..., :, 2]
+        nbar = (area[..., None] * n).sum(axis=(0, 1))
+        nbar = nbar / np.linalg.norm(nbar)
+        proj = float((area * (n @ nbar)).sum() / area.sum())
         if proj < 0.3:
             raise ValueError(f"canopy projects only {proj:.3f} of its area onto "
                              "the horizontal; geometry looks wrong")

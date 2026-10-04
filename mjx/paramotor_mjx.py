@@ -67,7 +67,8 @@ class ParamotorMJX:
         self.rest = jp.array(mesh.rest)
         self.vertex_mass = jp.array(mesh.mass)
         self.le = mesh.le  # first lifting chord station
-        R, area, _ = aero.cell_frames(mesh.lifting(mesh.rest))
+        rest = mesh.lifting(mesh.rest)
+        _, _, _, R, area = aero.strip_cells(rest, np.zeros_like(rest), self.p)
         self.p["strip_cl_scale"] = aero.ParamotorAero._arch_recovery(R, area)
         # Warp sizes its constraint buffer from this argument, not the XML's
         # <size njmax>; the canopy's edge constraints alone exceed its default.

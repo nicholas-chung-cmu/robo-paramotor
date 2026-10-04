@@ -58,7 +58,7 @@ class EnvConfig:
     gps_hz: int = 5
     baro_hz: int = 20  # BMP581 output rate; held between samples like GPS
     history_hz: int = 25  # observation history is downsampled from sensor_hz
-    history_seconds: float = 1.0
+    history_seconds: float = 2.0  # canopy dynamics are slow and unobserved
     episode_seconds: float = 300.0
     thrust_max: float = 2.0  # hardware thrust clamp; equals the XML ctrlrange
     initial_thrust: float = 0.8
@@ -90,6 +90,13 @@ class EnvConfig:
     # Penalty on the squared change of action between control steps (was 0.02).
     # Off for now.
     action_change_penalty: float = 0.0
+    # Curriculum-scaled terms. `difficulty` (0 -> 1, raised by the training
+    # gate) lengthens the route and fades the early helpers out.
+    min_route_points: int = 16       # route length at difficulty 0 (150 m at 10 m)
+    dense_reward: float = 0.02       # per step: heading along the route, altitude error
+    alive_reward: float = 0.01       # per step survival bonus
+    failure_penalty_start: float = 2.0  # failure penalty at difficulty 0 ...
+    failure_penalty: float = 10.0       # ... rising to this at difficulty 1
     solver_iterations: int = 10
     solver_ls_iterations: int = 5
 
@@ -154,6 +161,8 @@ class State:
     origin: Any
     target: Any  # index of the first route point not yet passed
     steps: Any
+    difficulty: Any  # curriculum level this episode was started at
+    last_point: Any  # index of this episode's final route point
     episode_return: Any
     obs: Any
     privileged: Any  # critic-only features (asymmetric critic); see _privileged
@@ -265,7 +274,8 @@ class ParamotorEnv:
         rest = np.asarray(self.physics.rest)
         self.chord0 = jp.array(np.linalg.norm(rest[:, self.physics.le] - rest[:, -1], axis=-1))
         self.pod_site = self.m.site("pod_com").id
-        self.privileged_size = 2 * rest.shape[0] - 1 + 24
+        self.tendon_max = jp.array(self.m.tendon_range[:, 1])
+        self.privileged_size = 2 * rest.shape[0] - 1 + 24 + self.m.ntendon + 1
         self.launch = jax.jit(lambda: self.physics.initial(
             c.launch_speed, c.altitude, c.initial_thrust))()
 
@@ -356,6 +366,8 @@ class ParamotorEnv:
             heading.T @ (pod - closest) / 10.0,      # true route error (3)
             pod[2:3] / 40.0,                         # height above ground (1)
             (state.steps / self.episode_steps)[None],  # episode time used (1)
+            d.ten_length / self.tendon_max - 1.0,    # line/brake slack (<0 slack)
+            self._distance_to_go(pod, state.points, state.target, state.last_point)[None] / 1000.0,
         ))
         return jp.clip(jp.nan_to_num(out), -10, 10)
 
@@ -399,6 +411,8 @@ class ParamotorEnv:
             origin=origin,
             target=jp.ones((), jp.int32),  # point 0 is the launch position
             steps=integer_zero,
+            difficulty=jp.asarray(difficulty, jp.float32),
+            last_point=self._last_point(difficulty),
             episode_return=zero,
             obs=jp.zeros(self.obs_size),
             privileged=jp.zeros(self.privileged_size),
@@ -419,24 +433,30 @@ class ParamotorEnv:
         q = jp.where(q[0] < 0, -q, q)  # avoid quaternion sign jumps in history
         return values.at[self.slices["pod_quat"]].set(q)
 
-    def _distance_to_go(self, pos, points, target):
+    def _last_point(self, difficulty):
+        """Final route point for an episode at this curriculum level: short
+        routes first, the full route at difficulty 1."""
+        full, short = self.cfg.route_points - 1, min(self.cfg.min_route_points, self.cfg.route_points - 1)
+        return jp.round(short + (full - short) * jp.clip(difficulty, 0.0, 1.0)).astype(jp.int32)
+
+    def _distance_to_go(self, pos, points, target, last=None):
         """Metres left: to the target point, then along the rest of the route.
 
         Continuous when the target advances (up to the success radius), so its
         change rewards closing on a point without penalizing passing it.
         """
-        last = self.cfg.route_points - 1
+        last = self.cfg.route_points - 1 if last is None else last
         here = jp.linalg.norm(pos - points[jp.minimum(target, last)])
         return here + jp.maximum(last - target, 0) * self.cfg.route_spacing_m
 
-    def _crossing(self, points, target, start, end):
+    def _crossing(self, points, target, start, end, last=None):
         """Did this step cross the target's plane, and how close did it come?
 
         The plane passes through the target point, perpendicular to the route
         tangent there. The miss distance is the closest approach to the point
         along this step's straight-line motion, start -> end.
         """
-        last = self.cfg.route_points - 1
+        last = self.cfg.route_points - 1 if last is None else last
         index = jp.minimum(target, last)
         point = points[index]
         tangent = points[jp.minimum(index + 1, last)] - points[index - 1]
@@ -519,14 +539,14 @@ class ParamotorEnv:
 
         previous_action = state.action
         start = state.data.site_xpos[self.m.site("pod_com").id]
-        before = self._distance_to_go(start, state.points, state.target)
+        before = self._distance_to_go(start, state.points, state.target, state.last_point)
         state, _ = jax.lax.scan(substep, state, jp.arange(self.substeps))
         data = state.data  # the last substep always refreshed the sensors
         pos = data.site_xpos[self.m.site("pod_com").id]
-        last = self.cfg.route_points - 1
+        last = state.last_point
         # The target is passed by crossing its plane (true position), however far
         # off; the reward is graded by the miss distance, so a miss never stalls.
-        reached, miss = self._crossing(state.points, state.target, start, pos)
+        reached, miss = self._crossing(state.points, state.target, start, pos, last)
         excess = jp.maximum(miss - self.cfg.success_radius_m, 0) / self.cfg.pass_sigma_m
         pass_reward = jp.where(reached, jp.exp(-excess**2), 0.0)
         target = state.target + reached
@@ -554,13 +574,27 @@ class ParamotorEnv:
         # Graded pass reward, plus progress shaping: the drop in distance-to-go.
         # A plain difference with no terminal term, so over a flight it sums to
         # the distance gained and a crash earns nothing extra.
-        progress_reward = self.cfg.progress_reward_per_m * (
-            before - self._distance_to_go(pos, state.points, target))
-        envelope_reward = self.cfg.envelope_reward * jp.mean(within)
-        reward = pass_reward + progress_reward + envelope_reward - (
+        closed = before - self._distance_to_go(pos, state.points, target, last)
+        progress_reward = self.cfg.progress_reward_per_m * closed
+        # Only while closing on the route, so a slow glide cannot farm it.
+        envelope_reward = self.cfg.envelope_reward * jp.mean(within) * (closed > 0)
+        # Early helpers, faded out by the curriculum: fly along the route
+        # (true ground track against the segment into the target), stay at its
+        # height, and stay alive.
+        early = 1.0 - jp.clip(state.difficulty, 0.0, 1.0)
+        segment = state.points[jp.minimum(target, last)] - state.points[jp.maximum(jp.minimum(target, last) - 1, 0)]
+        ground = data.sensordata[self.slices["pod_vel"]][:2]
+        heading = jp.dot(ground, segment[:2]) / jp.maximum(
+            jp.linalg.norm(ground) * jp.linalg.norm(segment[:2]), 1e-6)
+        dense = self.cfg.dense_reward * (heading - jp.clip(vertical / 10.0, 0.0, 1.0))
+        reward = pass_reward + progress_reward + envelope_reward + early * (
+            dense + self.cfg.alive_reward) - (
             self.cfg.action_change_penalty * jp.sum((action - previous_action) ** 2))
-        reward = jp.nan_to_num(reward, nan=-10.0, posinf=-10.0, neginf=-10.0)
-        reward = jp.where(failed, -10.0, reward) + jp.where(completed, 10.0, 0.0)
+        # Failure costs little while episodes earn little, the full penalty later.
+        penalty = self.cfg.failure_penalty_start + (
+            self.cfg.failure_penalty - self.cfg.failure_penalty_start) * (1.0 - early)
+        reward = jp.nan_to_num(reward, nan=-penalty, posinf=-penalty, neginf=-penalty)
+        reward = jp.where(failed, -penalty, reward) + jp.where(completed, 10.0, 0.0)
         state = state.replace(
             data=data,
             steps=state.steps + 1,

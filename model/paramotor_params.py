@@ -82,6 +82,7 @@ PAPER_ACRA2012 = dict(
     # Strip mode only: past the envelope the coefficients blend into a flat
     # plate over this width (paramotor_aero.stall_blend). Ours, not the paper's.
     stall_width=math.radians(4.0),
+    strip_cp=0.5,                   # strip mode: centre of pressure, fraction of chord
 )
 
 # ----------------------------------------------------------------------------
@@ -166,6 +167,9 @@ PEEK_1M = dict(
     # Strip mode: blend into flat-plate coefficients over 4 deg past the
     # envelope (a crude stall, not identified on the vehicle).
     stall_width=math.radians(4.0),                 # [PROVISIONAL]
+    # Strip mode: where along the chord each strip's force acts, as a fraction
+    # of chord from the leading edge (paramotor_aero.strip_cells). Trim study.
+    strip_cp=0.5,                                  # [PROVISIONAL]
 )
 
 # Brake coefficients (C_Ldelta_a, C_Ddelta_a, C_ldelta_a, C_ndelta_a) and the
