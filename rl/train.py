@@ -39,7 +39,7 @@ class PPOConfig:
     hidden_size: int = 128
     learning_rate: float = 3e-4  # annealed linearly to learning_rate_final over training
     learning_rate_final: float = 3e-5
-    gamma: float = 0.997  # ~13 s effective horizon at 25 Hz
+    gamma: float = machine.load().get("gamma", 0.997)  # set in machine.toml (0.997 ~ 13 s at 25 Hz)
     gae_lambda: float = machine.load().get("gae_lambda", 0.95)  # set in machine.toml
     clip: float = 0.2
     value_clip: float = 1.0  # value-loss clip, in return units (not the policy's 0.2)

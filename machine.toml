@@ -17,22 +17,30 @@ gpus = [0]
 # ~512 (512 -> 2048 gave ~20% more steps/s), so fewer, longer rollouts cost
 # little speed. Fewer environments also shrink MuJoCo Warp's per-environment
 # Newton buffers (outside JAX), which caused the out-of-memory crashes.
-num_envs = 256
-# num_envs = 4096                  # RTX PRO 6000: ~2.2x the 5080's CUDA cores, 96 GB
+num_envs = 128
+# num_envs = 2048                  # RTX PRO 6000: ~2.2x the 5080's CUDA cores, 96 GB
 
 # Control steps (0.04 s each) every environment collects per PPO update.
-# Long enough to cover how flights fail (~20 s in), so advantages see real
-# outcomes rather than leaning on the critic's guess past a short cut-off.
+# Long enough to hold a whole flight at the early curriculum (150 m routes,
+# ~30 s; failures ~20 s in), so advantages see real outcomes rather than the
+# critic's guess past a short cut-off. Later routes (up to 1 km, ~3 min) are
+# longer than any rollout; the critic covers the remainder.
 # Batch per update = num_envs * rollout_steps; it must divide into the 32 PPO
 # minibatches. GPU memory per update scales with the batch (~25 KB/sample at
 # peak), not with how it is split between the two.
-rollout_steps = 512                # 20.5 s; batch 131,072 (as 1024 x 128 was)
-# rollout_steps = 512              # RTX PRO 6000: batch ~2.1 M, ~52 GB peak in JAX
+rollout_steps = 1024               # 41 s; batch 131,072 (as 1024 x 128 was)
+# rollout_steps = 1024             # RTX PRO 6000: batch ~2.1 M, ~52 GB peak in JAX
 
-# GAE lambda (not machine-specific, but tied to rollout_steps). Higher leans
-# advantages on actual rewards over the rollout, less on the critic.
-gae_lambda = 0.98                  # was 0.95
-# gae_lambda = 0.98                # RTX PRO 6000
+# How far an action is judged on what actually followed (not machine-specific,
+# but tied to rollout_steps). gamma: rewards count for about 0.04 s / (1 -
+# gamma) ahead (0.997 = 13 s, 0.999 = 40 s). gae_lambda: real rewards are
+# weighted by (gamma * lambda) per step before the critic's estimate takes
+# over (0.997 * 0.98 fades in ~2 s; 0.999 * 0.99 in ~4 s, and the critic's
+# targets themselves look 40 s ahead). Higher = less bias, more noise.
+gamma = 0.999                      # was 0.997
+gae_lambda = 0.99                  # was 0.95, then 0.98
+# gamma = 0.999                    # RTX PRO 6000
+# gae_lambda = 0.99                # RTX PRO 6000
 
 # Cap on the share of GPU memory JAX may take, 0-1, per program. It leaves
 # room for MuJoCo Warp's physics buffers (allocated outside JAX) and for the
