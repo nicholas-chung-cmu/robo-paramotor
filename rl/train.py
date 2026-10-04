@@ -4,6 +4,9 @@ import os
 from pathlib import Path
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+from rl import machine  # noqa: E402  (before JAX: memory cap from machine.toml)
+
+machine.limit_jax_memory()
 os.environ.setdefault(
     "JAX_COMPILATION_CACHE_DIR", str(Path(__file__).resolve().parents[1] / "runs" / ".jax_cache")
 )
@@ -28,7 +31,7 @@ from rl.rl_env import ENDING_REASONS, EnvConfig, ParamotorEnv, config_from_saved
 @dataclass
 class PPOConfig:
     seed: int = 0
-    num_envs: int = 1024  # sized for a 16 GB desktop GPU; lower on laptops (see docs/RL.md)
+    num_envs: int = machine.load().get("num_envs", 1024)  # set per computer in machine.toml
     rollout_steps: int = 128
     updates: int = 1000
     epochs: int = 4

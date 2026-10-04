@@ -3,6 +3,9 @@
 import os
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+from rl import machine  # noqa: E402  (before JAX: memory cap from machine.toml)
+
+machine.limit_jax_memory()
 import jax
 import jax.numpy as jp
 import mujoco

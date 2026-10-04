@@ -28,7 +28,13 @@ python -m rl.train --smoke --output runs/smoke
 docker/train.sh --name first --updates 2000   # train + evaluate + plots in Docker -> runs/first/
 docker/train.sh --name base --seeds 5         # 5 seeds -> runs/base/seed0..4
 docker/train.sh --compare base high_lr        # rliable comparison -> runs/compare/
+docker/train.sh --finish first                # finish an interrupted run (crashed runs also retry on their own)
 ```
+
+Per-computer settings live in [machine.toml](machine.toml) at the repo root: the
+default number of training environments and the caps on JAX's GPU memory. Edit
+it when you move to a different machine. `docker/train.sh` runs one GPU job at
+a time (`runs/.gpu.lock`); a second training or test run refuses to start.
 
 ## Rewards
 

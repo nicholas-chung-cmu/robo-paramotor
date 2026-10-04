@@ -1,0 +1,14 @@
+# Settings for THIS computer. Edit them when you move to a different machine;
+# nothing else in the repo needs to change.
+
+# Parallel training environments (the PPOConfig default; --num-envs and a
+# --config file still override it, and a resumed run keeps its own).
+# 16 GB RTX 5080, 8-strip canopy: 1024 is safe; 2048 has run out of memory.
+num_envs = 1024
+
+# Cap on the share of GPU memory JAX may take, 0-1, per program. It leaves
+# room for MuJoCo Warp's physics buffers (allocated outside JAX) and for the
+# desktop; on this machine a GPU out-of-memory has crashed the NVIDIA driver.
+# Delete a line (or the lot) for no cap, e.g. on a machine with far more memory.
+jax_memory_fraction = 0.4          # training, evaluation, tests
+watcher_memory_fraction = 0.1      # the --headed watcher window

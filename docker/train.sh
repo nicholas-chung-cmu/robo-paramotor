@@ -42,6 +42,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+ORIGINAL_ARGS="$*"
 NAME="ppo-$(date +%Y%m%d-%H%M%S)"
 CPU=0 RESUME=0 FINISH=0 SMOKE=0 SEEDS=1 SEED=0 EPISODES=20 MODE=train HEADED=0 VERBOSE=0 RETRIES=3
 TARGETS=() TRAIN_ARGS=()
@@ -107,6 +108,22 @@ use_display() {
   fi
 }
 
+# One GPU job at a time. Two jobs can drive the card out of memory, and on this
+# machine that has crashed the NVIDIA driver and the displays. Training,
+# evaluation and tests hold runs/.gpu.lock until train.sh exits; the watcher
+# window and the interactive viewer are light and do not take it.
+gpu_lock() {
+  mkdir -p runs
+  exec 9>>runs/.gpu.lock
+  if ! flock -n 9; then
+    echo "train.sh: another GPU job is running (runs/.gpu.lock): $(cat runs/.gpu.lock)" >&2
+    echo "train.sh: wait for it to finish, or stop it, then run this again." >&2
+    exit 1
+  fi
+  : > runs/.gpu.lock
+  echo "pid $$ since $(date '+%F %T'): docker/train.sh $ORIGINAL_ARGS" >> runs/.gpu.lock
+}
+
 case "$MODE" in
   viewer)
     use_display
@@ -121,6 +138,7 @@ case "$MODE" in
     in_container python -m viewer.watch_training "runs/${TARGETS[0]}"
     exit $? ;;
   test)
+    gpu_lock
     in_container python -m pytest -v ${TARGETS[@]+"${TARGETS[@]}"}
     exit $? ;;
   analyze)
@@ -169,6 +187,7 @@ train_one() {
   done
 }
 
+gpu_lock  # before the watcher, so a refused run leaves no window behind
 if [[ $HEADED -eq 1 ]]; then
   # The watcher window runs beside training in its own container and stays
   # open after training ends; close the window to stop it.

@@ -17,6 +17,9 @@ import os
 from pathlib import Path
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+from rl import machine  # noqa: E402  (before JAX: memory cap from machine.toml)
+
+machine.limit_jax_memory()
 os.environ.setdefault(
     "JAX_COMPILATION_CACHE_DIR", str(Path(__file__).resolve().parents[1] / "runs" / ".jax_cache")
 )
