@@ -42,6 +42,10 @@ class PPOConfig:
     max_grad_norm: float = 0.5
     eval_every: int = 25
     checkpoint_every: int = 25
+    # The critic also sees ground truth the vehicle cannot measure (canopy shape
+    # and attitude, true airspeed, route error; ParamotorEnv._privileged). It is
+    # used only in training, so the deployed policy stays sensor-only.
+    asymmetric_critic: bool = True
 
 
 class ActorCritic(nn.Module):
@@ -49,18 +53,31 @@ class ActorCritic(nn.Module):
     thrust_bias: float = 0.693  # default only; main() sets it from initial_thrust / thrust_max
 
     @nn.compact
-    def __call__(self, obs):
-        actor, critic = obs, obs
-        for _ in range(2):
-            actor = nn.tanh(nn.Dense(self.hidden_size)(actor))
-            critic = nn.tanh(nn.Dense(self.hidden_size)(critic))
+    def __call__(self, obs, critic_obs=None):
+        """(mean, log_std, value). critic_obs is the critic's input: obs, or
+        obs plus privileged features for an asymmetric critic. Without it the
+        critic is skipped and value is zero (policy-only callers).
+
+        Layer names are fixed to the ones Flax assigned when actor and critic
+        layers were built interleaved, so older checkpoints still load.
+        """
+        actor = obs
+        for i in range(2):
+            actor = nn.tanh(nn.Dense(self.hidden_size, name=f"Dense_{2 * i}")(actor))
         # Begin near cruise with mostly released brakes, not both brakes at 50%.
         bias = lambda key, shape, dtype: jp.array([self.thrust_bias, -2.0, -2.0], dtype)
         mean = nn.Dense(
-            3, kernel_init=nn.initializers.orthogonal(0.01), bias_init=bias
+            3, kernel_init=nn.initializers.orthogonal(0.01), bias_init=bias, name="Dense_4"
         )(actor)
-        value = nn.Dense(1, kernel_init=nn.initializers.orthogonal(1.0))(critic)[..., 0]
         log_std = self.param("log_std", nn.initializers.constant(-0.7), (3,))
+        if critic_obs is None:
+            value = jp.zeros(obs.shape[:-1])
+        else:
+            critic = critic_obs
+            for i in range(2):
+                critic = nn.tanh(nn.Dense(self.hidden_size, name=f"Dense_{2 * i + 1}")(critic))
+            value = nn.Dense(1, kernel_init=nn.initializers.orthogonal(1.0),
+                             name="Dense_5")(critic)[..., 0]
         return mean, jp.clip(log_std, -5, 1), value
 
 
@@ -90,6 +107,13 @@ def advantages(reward, value, next_value, terminated, truncated, gamma, lam):
     return adv, adv + value
 
 
+def critic_input(states, cfg):
+    """The critic's observation: the policy's, plus privileged features."""
+    if cfg.asymmetric_critic:
+        return jp.concatenate((states.obs, states.privileged), axis=-1)
+    return states.obs
+
+
 def make_rollout(env, network, cfg):
     batched_step = jax.vmap(env.step)
     batched_reset = jax.vmap(env.reset, in_axes=(0, None))
@@ -106,13 +130,15 @@ def make_rollout(env, network, cfg):
         def one(carry, _):
             states, key = carry
             key, ak = jax.random.split(key)
-            mean, std, value = network.apply(params, states.obs)
+            critic_obs = critic_input(states, cfg)
+            mean, std, value = network.apply(params, states.obs, critic_obs)
             latent = mean + jp.exp(std) * jax.random.normal(ak, mean.shape)
             logp = log_probability(latent, mean, std)
             next_states, reward, term, trunc, metrics = batched_step(
                 states, jp.tanh(latent)
             )
-            next_value = network.apply(params, next_states.obs)[2]
+            next_value = network.apply(
+                params, next_states.obs, critic_input(next_states, cfg))[2]
             transition = (
                 states.obs,
                 latent,
@@ -123,6 +149,7 @@ def make_rollout(env, network, cfg):
                 term,
                 trunc,
                 metrics,
+                critic_obs,
             )
             done = term | trunc
 
@@ -145,8 +172,8 @@ def make_update(network, cfg):
         raise ValueError("rollout batch must divide evenly into minibatches")
 
     def loss(params, batch):
-        obs, latent, old_logp, old_value, adv, target = batch
-        mean, log_std, value = network.apply(params, obs)
+        obs, critic_obs, latent, old_logp, old_value, adv, target = batch
+        mean, log_std, value = network.apply(params, obs, critic_obs)
         logp = log_probability(latent, mean, log_std)
         ratio = jp.exp(logp - old_logp)
         actor = -jp.mean(
@@ -164,14 +191,14 @@ def make_update(network, cfg):
         )
 
     def update(learner, key, transitions):
-        obs, latent, logp, value, reward, nv, term, trunc, _ = transitions
+        obs, latent, logp, value, reward, nv, term, trunc, _, critic_obs = transitions
         adv, target = advantages(
             reward, value, nv, term, trunc, cfg.gamma, cfg.gae_lambda
         )
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)
         batch = jax.tree.map(
             lambda x: x.reshape((total,) + x.shape[2:]),
-            (obs, latent, logp, value, adv, target),
+            (obs, critic_obs, latent, logp, value, adv, target),
         )
 
         def epoch(carry, _):
@@ -320,7 +347,9 @@ def main():
     saved = load_checkpoint(args.resume) if args.resume else None
     raw = json.loads(args.config.read_text()) if args.config else {}
     ec = config_from_saved(saved["env"]) if saved else EnvConfig(**raw.get("env", {}))
-    pc = PPOConfig(**(saved["ppo"] if saved else raw.get("ppo", {})))
+    # Checkpoints from before the asymmetric critic trained a symmetric one.
+    pc = PPOConfig(**({"asymmetric_critic": False, **saved["ppo"]} if saved
+                      else raw.get("ppo", {})))
     for name in ("num_envs", "updates", "rollout_steps", "seed"):
         value = getattr(args, name)
         if value is not None:
@@ -359,7 +388,8 @@ def main():
     network = ActorCritic(pc.hidden_size, thrust_bias)
     key = jax.random.PRNGKey(pc.seed)
     key, nk, rk = jax.random.split(key, 3)
-    params = network.init(nk, jp.zeros(env.obs_size))
+    critic_size = env.obs_size + (env.privileged_size if pc.asymmetric_critic else 0)
+    params = network.init(nk, jp.zeros(env.obs_size), jp.zeros(critic_size))
     learner = TrainState.create(
         apply_fn=network.apply,
         params=params,
@@ -452,7 +482,7 @@ def main():
             loss = np.asarray(loss)
             if not np.all(np.isfinite(loss)):
                 raise FloatingPointError("Nonfinite PPO update")
-            metrics = np.asarray(batch[-1])
+            metrics = np.asarray(batch[8])
             done = np.asarray(batch[6] | batch[7])
             ended = done.sum()
             finished = (metrics[:, :, 4] * done).sum() / max(ended, 1)

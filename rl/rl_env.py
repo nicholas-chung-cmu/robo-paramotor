@@ -11,6 +11,7 @@ import numpy as np
 from rl import routes
 from model.paramotor_control import smooth_brakes
 from mjx.paramotor_mjx import ParamotorMJX
+from model import paramotor_aero as aero
 from mujoco.mjx._src.types import tree_path_to_attr_str
 from mujoco.mjx.warp import types as warp_types
 
@@ -61,7 +62,7 @@ class EnvConfig:
     episode_seconds: float = 300.0
     thrust_max: float = 2.0  # hardware thrust clamp; equals the XML ctrlrange
     initial_thrust: float = 0.8
-    launch_speed: float = 3.0
+    launch_speed: float = 6.0  # m/s, the canopy's design airspeed
     altitude: float = 40.0
     preview_index: tuple = (2, 4, 8)  # look-ahead, in points past the target
     success_radius_m: float = 2.0  # full pass reward within this 3D miss distance
@@ -152,6 +153,7 @@ class State:
     steps: Any
     episode_return: Any
     obs: Any
+    privileged: Any  # critic-only features (asymmetric critic); see _privileged
 
 
 class ParamotorEnv:
@@ -255,6 +257,12 @@ class ParamotorEnv:
         self.obs_size = self.history_count * self.frame_size + len(c.preview_index) * 3 + 5
         # The launch state depends only on the config, never on the reset key:
         # build it once here instead of re-running the forward pass every reset.
+        # Critic-only features: per-strip incidence (S-1), per-row chord (S),
+        # and 24 scalars, see _privileged.
+        rest = np.asarray(self.physics.rest)
+        self.chord0 = jp.array(np.linalg.norm(rest[:, self.physics.le] - rest[:, -1], axis=-1))
+        self.pod_site = self.m.site("pod_com").id
+        self.privileged_size = 2 * rest.shape[0] - 1 + 24
         self.launch = jax.jit(lambda: self.physics.initial(
             c.launch_speed, c.altitude, c.initial_thrust))()
 
@@ -312,7 +320,41 @@ class ParamotorEnv:
         # Known command-filter states, not unmeasured physical servo states.
         controls = jp.concatenate((state.action, state.brake_velocity / 10))
         obs = jp.concatenate((state.history.ravel(), preview, controls))
-        return state.replace(obs=jp.clip(jp.nan_to_num(obs), -10, 10))
+        return state.replace(obs=jp.clip(jp.nan_to_num(obs), -10, 10),
+                             privileged=self._privileged(state))
+
+    def _privileged(self, state):
+        """Ground truth the real vehicle cannot measure, for the critic only.
+
+        The critic exists only in training, so it may see the canopy and true
+        state; the policy never does. Vectors are in the TRUE heading frame.
+        """
+        d, ph, s = state.data, self.physics, self.slices
+        heading = heading_mat(quat_mat(d.sensordata[s["pod_quat"]]))
+        pod, pod_v = d.site_xpos[self.pod_site], d.sensordata[s["pod_vel"]]
+        P, V = ph.vertices(d)
+        mass = ph.vertex_mass
+        com = (mass[..., None] * P).sum((0, 1)) / mass.sum()
+        vel = (mass[..., None] * V).sum((0, 1)) / mass.sum()
+        R, area, _ = aero.cell_frames(P[:, ph.le:], jp)
+        _, _, omega, frame, _, _ = aero.canopy_state(P, V, mass, R, area, jp)
+        tilt = heading.T @ frame                     # canopy axes, heading frame
+        chord = jp.linalg.norm(P[:, ph.le] - P[:, -1], axis=-1) / self.chord0
+        _, _, closest = routes.nearest_on_segment(state.points, state.target, pod)
+        out = jp.concatenate((
+            ph.raw_alpha(d) / 0.5,                   # incidence of each strip, rad
+            chord - 1.0,                             # chord retention per span row
+            tilt[:, 0], tilt[:, 2],                  # canopy chord and normal axes (6)
+            heading.T @ (com - pod),                 # canopy offset from the pod, m (3)
+            heading.T @ (vel - pod_v) / 5.0,         # canopy velocity relative to pod (3)
+            heading.T @ omega / 3.0,                 # canopy angular velocity (3)
+            heading.T @ pod_v / 10.0,                # true air velocity, no wind (3)
+            jp.linalg.norm(pod_v)[None] / 10.0,      # airspeed (1)
+            heading.T @ (pod - closest) / 10.0,      # true route error (3)
+            pod[2:3] / 40.0,                         # height above ground (1)
+            (state.steps / self.episode_steps)[None],  # episode time used (1)
+        ))
+        return jp.clip(jp.nan_to_num(out), -10, 10)
 
     def reset(self, key, difficulty=0.0):
         key, pk, nk, bk = jax.random.split(key, 4)
@@ -356,6 +398,7 @@ class ParamotorEnv:
             steps=integer_zero,
             episode_return=zero,
             obs=jp.zeros(self.obs_size),
+            privileged=jp.zeros(self.privileged_size),
         )
         return self._observation(state)
 

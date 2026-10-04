@@ -164,7 +164,7 @@ def test_target_passes_at_its_plane_with_graded_reward(env, initial):
     old = env.cfg.progress_reward_per_m, env.cfg.envelope_reward
     env.cfg.progress_reward_per_m = env.cfg.envelope_reward = 0.0
     try:
-        # The level, straight launch route runs along +x at 3 m/s (0.12 m per
+        # The level, straight launch route runs along +x at 6 m/s (0.24 m per
         # step): put point 1 just ahead, so this step crosses its plane, offset
         # vertically by the intended miss distance.
         for miss in (0.5, 4.0, 8.0):
