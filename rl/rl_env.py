@@ -8,7 +8,7 @@ from flax import struct
 import mujoco
 import numpy as np
 
-from rl import routes
+from rl import machine, routes
 from model.paramotor_control import smooth_brakes
 from mjx.paramotor_mjx import ParamotorMJX
 from model import paramotor_aero as aero
@@ -180,7 +180,8 @@ class ParamotorEnv:
 
     def __init__(self, config=None):
         self.cfg = c = config or EnvConfig()
-        self.physics = ParamotorMJX(c.solver_iterations, c.solver_ls_iterations)
+        self.physics = ParamotorMJX(c.solver_iterations, c.solver_ls_iterations,
+                                    machine.load().get("warp_graph_mode"))
         self.m = self.physics.native
         dt = float(self.m.opt.timestep)
         for hz in (c.control_hz, c.sensor_hz, c.gps_hz, c.baro_hz):

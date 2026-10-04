@@ -32,7 +32,7 @@ from rl.rl_env import ENDING_REASONS, EnvConfig, ParamotorEnv, config_from_saved
 class PPOConfig:
     seed: int = 0
     num_envs: int = machine.load().get("num_envs", 1024)  # set per computer in machine.toml
-    rollout_steps: int = 128
+    rollout_steps: int = machine.load().get("rollout_steps", 128)  # set per computer in machine.toml
     updates: int = 1000
     epochs: int = 4
     minibatches: int = 32  # 16,384-sample minibatches at 4096 envs: 128 gradient steps per update

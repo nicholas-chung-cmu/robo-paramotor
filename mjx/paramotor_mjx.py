@@ -17,6 +17,7 @@ from mujoco import mjx
 import numpy as np
 import warp
 from mujoco.mjx.third_party.mujoco_warp._src.types import OverflowType
+from mujoco.mjx.warp import types as warp_types
 
 from model import paramotor_aero as aero
 from model.paramotor_params import PEEK_1M
@@ -39,12 +40,15 @@ def quat_mat(q):
 
 
 class ParamotorMJX:
-    def __init__(self, iterations=10, ls_iterations=5):
+    def __init__(self, iterations=10, ls_iterations=5, graph_mode=None):
+        """graph_mode: a mujoco.mjx.warp.types.GraphMode name (NONE, JAX, WARP,
+        WARP_STAGED, WARP_STAGED_EX); None keeps MJX's default, WARP on a GPU."""
         self.native = m = mujoco.MjModel.from_xml_path(str(XML))
         if m.opt.density or m.opt.viscosity:
             raise ValueError("Built-in fluid forces would double-count aero")
         m.opt.iterations, m.opt.ls_iterations = iterations, ls_iterations
-        model = mjx.put_model(m, impl="warp")
+        model = mjx.put_model(m, impl="warp", graph_mode=(
+            None if graph_mode is None else getattr(warp_types.GraphMode, graph_mode)))
         # ls_iterations is capped on purpose (EnvConfig.solver_ls_iterations);
         # Warp would print a warning every time a line search hits the cap.
         warp_opt = model.opt._impl

@@ -6,9 +6,22 @@
 # 16 GB RTX 5080, 8-strip canopy: 1024 is safe; 2048 has run out of memory.
 num_envs = 1024
 
+# Control steps each environment collects per PPO update. Throughput (steps/s)
+# does not depend on it; wall time and GPU memory per update scale with it, as
+# num_envs * rollout_steps. Halve it to fit more environments in memory.
+# num_envs * rollout_steps must divide evenly into the 32 PPO minibatches.
+rollout_steps = 128
+
 # Cap on the share of GPU memory JAX may take, 0-1, per program. It leaves
 # room for MuJoCo Warp's physics buffers (allocated outside JAX) and for the
 # desktop; on this machine a GPU out-of-memory has crashed the NVIDIA driver.
 # Delete a line (or the lot) for no cap, e.g. on a machine with far more memory.
 jax_memory_fraction = 0.4          # training, evaluation, tests
 watcher_memory_fraction = 0.1      # the --headed watcher window
+
+# How MuJoCo Warp uses CUDA graphs (mujoco.mjx.warp.types.GraphMode): WARP
+# (MJX's default on a GPU: capture and replay while buffer addresses match),
+# WARP_STAGED / WARP_STAGED_EX (copy through fixed staging buffers so one graph
+# is always replayed), JAX (JAX captures it as part of its own graph), NONE.
+# Which is fastest is machine-specific: benchmark with runs/tools/bench_graph.py.
+warp_graph_mode = "WARP"
