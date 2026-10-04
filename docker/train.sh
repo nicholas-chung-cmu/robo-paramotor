@@ -15,6 +15,8 @@
 #   docker/train.sh --test                           # run the test suite in the image
 #   docker/train.sh --test tests/test_rl.py -k gps   # any pytest arguments after --test
 #   docker/train.sh --name first --retries 5         # retry a crashed run up to 5 times (default 3)
+#   docker/train.sh --finish first                   # finish an interrupted runs/first to its original
+#                                                    #   target (same retries), then evaluate + analyze
 #   docker/train.sh --name first --headed            # train + a window replaying, for every
 #                                                    # new checkpoint, its best of 32 flights
 #   docker/train.sh --watch first                    # that window for a run already training
@@ -41,13 +43,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 NAME="ppo-$(date +%Y%m%d-%H%M%S)"
-CPU=0 RESUME=0 SMOKE=0 SEEDS=1 SEED=0 EPISODES=20 MODE=train HEADED=0 VERBOSE=0 RETRIES=3
+CPU=0 RESUME=0 FINISH=0 SMOKE=0 SEEDS=1 SEED=0 EPISODES=20 MODE=train HEADED=0 VERBOSE=0 RETRIES=3
 TARGETS=() TRAIN_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name)      NAME="$2"; shift 2 ;;
     --cpu)       CPU=1; shift ;;
     --resume)    RESUME=1; shift ;;
+    --finish)    RESUME=1; FINISH=1; NAME="$2"; shift 2 ;;
     --retries)   RETRIES="$2"; shift 2 ;;
     --smoke)     SMOKE=1; TRAIN_ARGS+=("$1"); shift ;;
     --seeds)     SEEDS="$2"; shift 2 ;;
@@ -141,6 +144,7 @@ train_one() {
   if [[ $RESUME -eq 1 ]]; then
     [[ -f "$run/checkpoint.pkl" ]] || { echo "train.sh: no $run/checkpoint.pkl to resume" >&2; exit 1; }
     extra=(--resume "$run/checkpoint.pkl")
+    [[ $FINISH -eq 1 ]] && extra+=(--finish)
   else
     extra=(--seed "$seed")
   fi
