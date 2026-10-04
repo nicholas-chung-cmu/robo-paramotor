@@ -207,7 +207,7 @@ only what you need through JSON, without editing code:
     "history_seconds": 1.0,
     "episode_seconds": 300.0,
     "curriculum": true,
-    "thrust_max": 1.0,
+    "thrust_max": 2.0,
     "noise_std": {"gyro": [0.0, 0.0, 0.0], "accel": 0.0, "gps_pos_xy": 0.0},
     "bias_std": {"gyro": 0.0},
     "bias_walk_std": {"gyro": 0.0},
@@ -279,7 +279,7 @@ period. Noise is applied before normalization and before GPS sample/hold.
 Actions are `[thrust, brake, diff]` in `[-1, 1]`. Thrust maps to `[0, thrust_max]` N.
 `brake` maps to `b` in `[0, 1]` and `diff` is used as is (positive = right brake).
 They mix into `left = clip(b - diff, 0, 1)` and `right = clip(b + diff, 0, 1)`,
-each scaled to `[0, 3]` rad of line travel. `thrust_max` is 1.0 N, the hardware thrust
+each scaled to `[0, 3]` rad of line travel. `thrust_max` is 2.0 N, the hardware thrust
 clamp, and equals the XML actuator range. Under power the propeller reaction
 torque turns the vehicle; holding a line is left to the policy. The brake command
 follows the same critically damped filter as the viewer, reaching about 99% of a
@@ -317,8 +317,10 @@ launch altitude. `--path random` evaluates seeded random routes separately.
 Each pass earns a **graded reward** on the 3D miss distance d:
 `exp(-(max(d - success_radius_m, 0) / pass_sigma_m)²)`. That is 1 within 2 m,
 0.78 at 3 m, 0.37 at 4 m and 0.02 at 6 m with the defaults (both 2 m). The
-reward also has a small penalty on command changes, -10 on failure, and +10 for
-passing the last point's plane (however accurately), plus **progress shaping**:
+reward also has -10 on failure, +10 for passing the last point's plane (however
+accurately), a small **alpha-range reward** (`envelope_reward`, 0.005 per control
+step times the fraction of spanwise strips inside the aero model's
+angle-of-attack interval, at most 0.125/s), and **progress shaping**:
 `progress_reward_per_m` (0.1) times the drop in distance-to-go each step.
 Distance-to-go is the true 3D distance to the target point plus the route length
 remaining after it. It is nearly continuous when a point is passed accurately;
@@ -327,12 +329,14 @@ punish misses (the graded pass reward does). It is a plain difference with no
 terminal term: over a flight it sums to 0.1 × metres gained, so ending the
 episode early earns nothing extra. A full 1 km route is worth about 100 from
 shaping, next to up to 100 from passes (points 1 to 100). Set it to 0 to train on
-the pass rewards alone.
+the pass rewards alone. The penalty on command changes (`action_change_penalty`,
+was 0.02 times the squared action change) is off by default.
 
-Failures include ground crossing, excessive tracking error (35 m horizontal or 25 m vertical from the target segment), canopy below the pod,
-nonfinite dynamics, or remaining outside the calibrated angle-of-attack interval
-for over one second (any spanwise strip, its incidence averaged over the chord
-by area). "Canopy below the pod" uses the skin's mass centre. A 300-second time limit truncates the episode. PPO bootstraps
+Failures include ground crossing, excessive tracking error (35 m horizontal or
+25 m vertical from the target segment), or nonfinite dynamics. The canopy
+dropping below the pod no longer ends an episode either. Leaving the calibrated angle-of-attack interval no longer
+ends an episode; it only forgoes the alpha-range reward (each spanwise strip,
+its incidence averaged over the chord by area). A 300-second time limit truncates the episode. PPO bootstraps
 value at time limits, but stops advantage propagation across all episode resets.
 The aerodynamic coefficient clamp remains the accepted model's clamp; it is not a
 physical stall model.

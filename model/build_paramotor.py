@@ -32,7 +32,7 @@ G = 1e-3  # gram -> kg
 # row at both tips and at each strip centre (N_PANEL + 2 rows), so the line
 # stations, which sit at strip centres, land on vertices. The mass table, the
 # arc geometry, the line stations and the brake anchors all scale from it.
-N_PANEL = 14
+N_PANEL = 8
 
 M = {
     # --- one merged avionics PCB: 10+30+1.7+3+7.3+2.2+7+4+3 = 68.2 g ---
@@ -292,10 +292,12 @@ OMEGA_BENCH = 10_000 * 2 * math.pi / 60.0     # rad/s at that figure
 K_T = T_BENCH / OMEGA_BENCH**2
 # Commanded thrust ceiling, i.e. the ctrlrange on the thrust actuator.
 #
-# 1.0 N = T/W 0.31 on the 325.4 g all-up mass: the hardware thrust clamp the
-# RL policy trains against. Far BELOW the 4.02 N (410 gf) static bench figure,
-# so this is a deliberate limit, not what the motor/prop can pull.
-THRUST_MAX = 1.0                              # N
+# 2.0 N = T/W 0.63 on the 325.4 g all-up mass: the hardware thrust clamp the
+# RL policy trains against. Below the 4.02 N (410 gf) static bench figure, so
+# this is a deliberate limit, not what the motor/prop can pull. Raised from
+# 1.0 N; on the earlier rigid canopy powered flight departed above ~1.7 N
+# (docs/MODEL_NOTES.md), not re-checked on the current canopy.
+THRUST_MAX = 2.0                              # N
 OMEGA_MAX = math.sqrt(THRUST_MAX / K_T)       # rad/s needed for THRUST_MAX
 ROTOR_KV = 0.005              # N.m.s/rad, velocity-servo gain
 ROTOR_TAU_CAP = 0.2           # N.m, spin-up torque limit

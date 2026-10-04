@@ -20,6 +20,7 @@ import jax
 import jax.numpy as jp
 import numpy as np
 import optax
+import warp as wp
 
 from rl.rl_env import EnvConfig, ParamotorEnv, config_from_saved, select
 
@@ -27,7 +28,7 @@ from rl.rl_env import EnvConfig, ParamotorEnv, config_from_saved, select
 @dataclass
 class PPOConfig:
     seed: int = 0
-    num_envs: int = 4096  # sized for a 16 GB desktop GPU; lower on laptops (see docs/RL.md)
+    num_envs: int = 1024  # sized for a 16 GB desktop GPU; lower on laptops (see docs/RL.md)
     rollout_steps: int = 128
     updates: int = 1000
     epochs: int = 4
@@ -45,7 +46,7 @@ class PPOConfig:
 
 class ActorCritic(nn.Module):
     hidden_size: int = 128
-    thrust_bias: float = 0.693  # tanh(0.693) = 0.6 -> 0.8 N of a 1.0 N range
+    thrust_bias: float = 0.693  # default only; main() sets it from initial_thrust / thrust_max
 
     @nn.compact
     def __call__(self, obs):
@@ -196,6 +197,33 @@ def make_update(network, cfg):
         return learner, key, metrics.mean(0)
 
     return jax.jit(update)
+
+
+MEMORY_FIELDS = (
+    "update", "device_used_gb", "outside_jax_gb", "jax_pool_gb", "jax_in_use_gb",
+    "jax_peak_gb", "jax_largest_free_gb",
+)
+
+
+def gpu_memory():
+    """GPU memory in GB. JAX (policy and PPO) keeps its own pool and reports
+    it. MuJoCo Warp's physics buffers do not show in Warp's mempool counters,
+    so they are measured as outside_jax: whole-GPU use minus JAX's pool, which
+    also holds fixed overhead (CUDA contexts, other processes such as the
+    watcher). Growth across updates is what matters."""
+    gb = 1e-9
+    stats = jax.devices()[0].memory_stats() or {}
+    device = wp.get_device("cuda:0") if wp.is_cuda_available() else None
+    used = (device.total_memory - device.free_memory) * gb if device else 0.0
+    pool = stats.get("pool_bytes", stats.get("bytes_reserved", 0)) * gb
+    return {
+        "device_used_gb": used,
+        "outside_jax_gb": used - pool,
+        "jax_pool_gb": pool,
+        "jax_in_use_gb": stats.get("bytes_in_use", 0) * gb,
+        "jax_peak_gb": stats.get("peak_bytes_in_use", 0) * gb,
+        "jax_largest_free_gb": stats.get("largest_free_block_bytes", 0) * gb,
+    }
 
 
 def save_checkpoint(
@@ -374,6 +402,11 @@ def main():
     )
     mode = "a" if saved and (args.output / "metrics.csv").exists() else "w"
     gate_mode = "a" if saved and (args.output / "eval.csv").exists() else "w"
+    memory_mode = "a" if saved and (args.output / "memory.csv").exists() else "w"
+    memory_file = (args.output / "memory.csv").open(memory_mode, newline="", buffering=1)
+    memory_writer = csv.writer(memory_file)
+    if memory_mode == "w":
+        memory_writer.writerow(MEMORY_FIELDS)
     with (args.output / "metrics.csv").open(mode, newline="", buffering=1) as f, (
         args.output / "eval.csv"
     ).open(gate_mode, newline="", buffering=1) as gate_file:
@@ -441,9 +474,12 @@ def main():
                     speed,
                 ]
             )
+            mem = gpu_memory()
+            memory_writer.writerow([iteration + 1, *(f"{mem[k]:.3f}" for k in MEMORY_FIELDS[1:])])
             print(
                 f"update {iteration+1}: reward={reward:.3f} lateral={metrics[:,:,0].mean():.2f} m "
-                f"level={difficulty:.2f} {speed:.1f} steps/s",
+                f"level={difficulty:.2f} {speed:.1f} steps/s | gpu {mem['device_used_gb']:.1f} GB "
+                f"(jax pool {mem['jax_pool_gb']:.1f}, outside jax {mem['outside_jax_gb']:.1f})",
                 flush=True,
             )
             if args.verbose:
@@ -487,6 +523,7 @@ def main():
                     key,
                     env_steps,
                 )
+    memory_file.close()
     print("Saved", checkpoint, flush=True)
 
 

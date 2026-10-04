@@ -456,7 +456,7 @@ def test_strip_generates_roll_physics():
           Clb_s > 0.15 and abs(Clb_l) < 1e-9,
           f"C_lbeta: strip {Clb_s:+.4f} vs lumped {Clb_l:+.4f}; "
           f"dM/dbeta = {dMdb_s:+.3f} N.m/rad")
-    Q = 1.0 * 0.0105  # prop reaction torque at the 1.0 N thrust clamp
+    Q = 2.0 * 0.0105  # prop reaction torque at the 2.0 N thrust clamp
     check("sideslip moment scale exceeds the prop torque scale",
           math.degrees(Q / abs(dMdb_s)) < 3.0,
           f"{math.degrees(Q/abs(dMdb_s)):.2f} deg sideslip balances {Q:.4f} N.m "

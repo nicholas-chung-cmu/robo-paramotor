@@ -142,9 +142,10 @@ job. `test_aero.py` therefore REPORTS powered bank and sink as diagnostics
 (and only asserts that the run stays finite). `test_aero_reporting.py` verifies
 pytest and standalone exit codes using the unpowered-glide check as its probe.
 
-Thrust is clamped at 1.0 N in `build_paramotor.py` (`THRUST_MAX`), so the XML
-`ctrlrange` and the RL `thrust_max` agree; the cause of departure above about
-1.7 N was not investigated.
+Thrust is clamped at 2.0 N in `build_paramotor.py` (`THRUST_MAX`), so the XML
+`ctrlrange` and the RL `thrust_max` agree. It was 1.0 N; the departure above
+about 1.7 N in the table above (earlier rigid canopy) was not investigated and
+has not been re-checked on the current canopy.
 
 ### Run locally on Windows
 

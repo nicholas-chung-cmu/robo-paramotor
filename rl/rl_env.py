@@ -1,6 +1,6 @@
 """Batched-friendly MJX path following. No Gym wrappers or global callbacks."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 import jax
 import jax.numpy as jp
@@ -59,7 +59,7 @@ class EnvConfig:
     history_hz: int = 25  # observation history is downsampled from sensor_hz
     history_seconds: float = 1.0
     episode_seconds: float = 300.0
-    thrust_max: float = 1.0  # hardware thrust clamp; equals the XML ctrlrange
+    thrust_max: float = 2.0  # hardware thrust clamp; equals the XML ctrlrange
     initial_thrust: float = 0.8
     launch_speed: float = 3.0
     altitude: float = 40.0
@@ -82,7 +82,13 @@ class EnvConfig:
     gps_dropout: float = 0.0
     position_randomization_m: float = 1.0
     max_cross_track_m: float = 35.0
-    envelope_grace_s: float = 1.0
+    # Leaving the aero model's alpha range no longer ends an episode. Instead
+    # each control step earns this times the fraction of wing strips inside it
+    # (at most 0.125/s at 25 Hz, against ~0.6/s for flying the route at 6 m/s).
+    envelope_reward: float = 0.005
+    # Penalty on the squared change of action between control steps (was 0.02).
+    # Off for now.
+    action_change_penalty: float = 0.0
     solver_iterations: int = 10
     solver_ls_iterations: int = 5
 
@@ -92,8 +98,10 @@ LEGACY_ROUTE = {"route_points": 513, "route_spacing_m": 2.0}
 
 
 def config_from_saved(env):
-    """EnvConfig from a checkpoint's saved env dict, filling fields it predates."""
-    return EnvConfig(**{**LEGACY_ROUTE, **env})
+    """EnvConfig from a checkpoint's saved env dict, filling fields it predates
+    and dropping ones since removed (such as envelope_grace_s)."""
+    known = {f.name for f in fields(EnvConfig)}
+    return EnvConfig(**{k: v for k, v in {**LEGACY_ROUTE, **env}.items() if k in known})
 
 
 def _batched(path):
@@ -142,7 +150,6 @@ class State:
     origin: Any
     target: Any  # index of the first route point not yet passed
     steps: Any
-    envelope_time: Any
     episode_return: Any
     obs: Any
 
@@ -200,8 +207,8 @@ class ParamotorEnv:
             raise ValueError("Success radius must be positive, GPS limit non-negative")
         if c.progress_reward_per_m < 0:
             raise ValueError("Progress reward cannot be negative")
-        if c.position_randomization_m < 0 or c.envelope_grace_s < 0:
-            raise ValueError("Randomization and envelope grace cannot be negative")
+        if min(c.position_randomization_m, c.envelope_reward, c.action_change_penalty) < 0:
+            raise ValueError("Randomization, envelope reward and action penalty cannot be negative")
         self.latency_ticks = round(c.gps_latency_s * c.sensor_hz)
         self.episode_steps = round(c.episode_seconds * c.control_hz)
         self.slices = {
@@ -347,7 +354,6 @@ class ParamotorEnv:
             origin=origin,
             target=jp.ones((), jp.int32),  # point 0 is the launch position
             steps=integer_zero,
-            envelope_time=zero,
             episode_return=zero,
             obs=jp.zeros(self.obs_size),
         )
@@ -485,19 +491,14 @@ class ParamotorEnv:
         lateral = jp.linalg.norm(error[:2])
         vertical = jp.abs(error[2])
         raw = self.physics.raw_alpha(data)
-        outside = jp.any(
-            (raw < self.physics.p["alpha_min"]) | (raw > self.physics.p["alpha_max"])
-        )
-        envelope = jp.where(outside, state.envelope_time + self.control_dt, 0.0)
+        within = (raw >= self.physics.p["alpha_min"]) & (raw <= self.physics.p["alpha_max"])
+        outside = ~jp.all(within)  # for metrics only; it no longer ends the episode
         finite = jp.all(jp.isfinite(data.qpos)) & jp.all(jp.isfinite(data.qvel))
-        canopy_below = self.physics.canopy_com(data)[2] < data.xipos[self.physics.pod, 2]
         failed = (
             (~finite)
             | (pos[2] < 0)
             | (lateral > self.cfg.max_cross_track_m)
             | (vertical > 25)
-            | canopy_below
-            | (envelope > self.cfg.envelope_grace_s)
         )
         completed = target > last
         terminated = failed | completed
@@ -507,9 +508,9 @@ class ParamotorEnv:
         # the distance gained and a crash earns nothing extra.
         progress_reward = self.cfg.progress_reward_per_m * (
             before - self._distance_to_go(pos, state.points, target))
-        reward = pass_reward + progress_reward - 0.02 * jp.sum(
-            (action - previous_action) ** 2
-        )
+        envelope_reward = self.cfg.envelope_reward * jp.mean(within)
+        reward = pass_reward + progress_reward + envelope_reward - (
+            self.cfg.action_change_penalty * jp.sum((action - previous_action) ** 2))
         reward = jp.nan_to_num(reward, nan=-10.0, posinf=-10.0, neginf=-10.0)
         reward = jp.where(failed, -10.0, reward) + jp.where(completed, 10.0, 0.0)
         state = state.replace(
@@ -517,7 +518,6 @@ class ParamotorEnv:
             steps=state.steps + 1,
             action=action,
             target=target,
-            envelope_time=envelope,
             episode_return=state.episode_return + reward,
         )
         state = self._observation(state)

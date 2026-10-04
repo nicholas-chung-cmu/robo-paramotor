@@ -39,9 +39,10 @@ terms use the true simulated state, not the noisy sensors:
 | --- | --- | --- |
 | Point passed | exp(−(max(d − 2 m, 0) / 2 m)²): +1 within 2 m, 0.37 at 4 m, 0.02 at 6 m | each route point (10 m apart), when the vehicle crosses the plane through it perpendicular to the route; d is the 3D miss distance (`success_radius_m`, `pass_sigma_m`) |
 | Progress shaping | +0.1 per metre (`progress_reward_per_m`) | every step: the drop in distance-to-go (distance to the target point + route length left after it); moving away is negative |
-| Smoothness | −0.02 × ‖action − previous action‖² | every step |
+| Alpha range | +0.005 × fraction of wing strips inside the angle-of-attack range (`envelope_reward`) | every step; leaving the range no longer ends the episode |
+| Smoothness | −`action_change_penalty` × ‖action − previous action‖², currently 0 (was 0.02) | every step |
 | Route completed | +10 | crossing the last point's plane, however accurately (ends the episode) |
-| Failure | −10, replaces that step's reward | ground contact, more than 35 m off the route sideways or 25 m vertically, canopy below the pod, non-finite physics, or outside the angle-of-attack envelope for over 1 s (ends the episode) |
+| Failure | −10, replaces that step's reward | ground contact, more than 35 m off the route sideways or 25 m vertically, or non-finite physics (ends the episode) |
 
 A non-finite reward also counts as −10. Reaching the 300 s time limit ends the
 episode with no penalty, and PPO bootstraps the value there. PPO discounts with

@@ -159,8 +159,10 @@ def test_target_passes_at_its_plane_with_graded_reward(env, initial):
     assert int(initial.target) == 1
     pos = initial.data.site_xpos[env.m.site("pod_com").id]
     radius, sigma = env.cfg.success_radius_m, env.cfg.pass_sigma_m
-    # Isolate the pass reward: no shaping, and the action is unchanged.
-    old, env.cfg.progress_reward_per_m = env.cfg.progress_reward_per_m, 0.0
+    # Isolate the pass reward: no shaping, no alpha-range reward, and the
+    # action is unchanged.
+    old = env.cfg.progress_reward_per_m, env.cfg.envelope_reward
+    env.cfg.progress_reward_per_m = env.cfg.envelope_reward = 0.0
     try:
         # The level, straight launch route runs along +x at 3 m/s (0.12 m per
         # step): put point 1 just ahead, so this step crosses its plane, offset
@@ -178,12 +180,17 @@ def test_target_passes_at_its_plane_with_graded_reward(env, initial):
         new, reward, *_ = env.step(state, state.action)
         assert int(new.target) == 1 and abs(float(reward)) < 1e-6
     finally:
-        env.cfg.progress_reward_per_m = old
+        env.cfg.progress_reward_per_m, env.cfg.envelope_reward = old
 
 
 def test_progress_shaping(env, initial):
     site = env.m.site("pod_com").id
-    new, reward, *_ = env.step(initial, initial.action)
+    # Isolate the progress term: the alpha-range reward is checked separately.
+    old, env.cfg.envelope_reward = env.cfg.envelope_reward, 0.0
+    try:
+        new, reward, *_ = env.step(initial, initial.action)
+    finally:
+        env.cfg.envelope_reward = old
     assert int(new.target) == 1  # no point passed, no action change
     before = env._distance_to_go(initial.data.site_xpos[site], initial.points, 1)
     after = env._distance_to_go(new.data.site_xpos[site], new.points, 1)
@@ -429,10 +436,10 @@ def test_select_and_repeat_batched_states(env):
 
 
 def test_thrust_clamp_matches_xml(env):
-    assert env.cfg.thrust_max == 1.0
-    assert env.m.actuator_ctrlrange[env.physics.thrust, 1] == 1.0
+    assert env.cfg.thrust_max == 2.0
+    assert env.m.actuator_ctrlrange[env.physics.thrust, 1] == 2.0
     with pytest.raises(ValueError):
-        ParamotorEnv(EnvConfig(thrust_max=1.1))
+        ParamotorEnv(EnvConfig(thrust_max=2.1))
     states = jax.jit(env.reset)(jax.random.PRNGKey(3))
     states, *_ = jax.jit(env.step)(states, jp.array([1.0, -1.0, -1.0]))
-    assert float(states.data.ctrl[env.physics.thrust]) <= 1.0 + 1e-6
+    assert float(states.data.ctrl[env.physics.thrust]) <= 2.0 + 1e-6

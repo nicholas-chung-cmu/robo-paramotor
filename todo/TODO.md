@@ -37,8 +37,14 @@ Each item says why it matters and how to tell it is done.
 - [ ] **Timestep study** (RL_TODO_v2 item 2.6). 0.5 ms → 1 ms halves every
       run's cost. It is the largest remaining lever, and it compounds with Warp.
 - [ ] **Measure environment-count scaling.** Run 256 / 1024 / 2048 / 4096 /
-      8192 envs, recording steps/s and peak GPU memory. The default is now 4096
-      but has not been benchmarked. Also record the 16 GB ceiling.
+      8192 envs, recording steps/s and peak GPU memory. The default is now 1024.
+      With the closed-airfoil canopy (585 DOF) the Newton solver runs out of
+      memory on the 16 GB RTX 5080 at 4096 envs (15.8 GB peak) and 3072
+      (15.3 GB). 2048 ran one update (774 s, 339 steps/s) and then failed to
+      allocate Newton's per-step 2048 × 592 × 592 matrix (2.9 GB) on update 2.
+      It factors a dense nv × nv matrix per env, so memory grows with nv². CG
+      fit 4096 envs in 11.2 GB (1,340 steps/s, but it hit its 10-iteration
+      cap); kept Newton.
 - [ ] **Merge the sensor pass into the next substep's forward** (#4 from the
       speed review). `sample()` re-runs a full `forward()` every 20 substeps.
       Three of the four samples per control step could reuse the next
