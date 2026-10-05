@@ -28,7 +28,7 @@ def env():
     mujoco.set_mjcb_passive(None)
     # Noise off: these tests check timing and layout, not noise statistics.
     return ParamotorEnv(EnvConfig(episode_seconds=0.2, position_randomization_m=0.0,
-                                  noise_std={}, bias_std={}))
+                                  start_height_noise_m=0.0, noise_std={}, bias_std={}))
 
 
 @pytest.fixture(scope="module")
@@ -162,10 +162,10 @@ def test_target_passes_at_its_plane_with_graded_reward(env, initial):
     assert int(initial.target) == 1
     pos = initial.data.site_xpos[env.m.site("pod_com").id]
     radius, sigma = env.cfg.success_radius_m, env.cfg.pass_sigma_m
-    # Isolate the pass reward: no shaping, no alpha-range reward, and the
-    # action is unchanged.
-    old = env.cfg.progress_reward_per_m, env.cfg.envelope_reward
-    env.cfg.progress_reward_per_m = env.cfg.envelope_reward = 0.0
+    # Isolate the pass reward: no shaping, no alpha-range or height reward,
+    # and the action is unchanged.
+    old = env.cfg.progress_reward_per_m, env.cfg.envelope_reward, env.cfg.altitude_penalty
+    env.cfg.progress_reward_per_m = env.cfg.envelope_reward = env.cfg.altitude_penalty = 0.0
     try:
         # The level, straight launch route runs along +x at 6 m/s (0.24 m per
         # step): put point 1 just ahead, so this step crosses its plane, offset
@@ -183,7 +183,34 @@ def test_target_passes_at_its_plane_with_graded_reward(env, initial):
         new, reward, *_ = env.step(state, state.action)
         assert int(new.target) == 1 and abs(float(reward)) < 1e-6
     finally:
-        env.cfg.progress_reward_per_m, env.cfg.envelope_reward = old
+        env.cfg.progress_reward_per_m, env.cfg.envelope_reward, env.cfg.altitude_penalty = old
+
+
+def test_height_penalty_is_worse_below_the_route(env, initial):
+    c = env.cfg
+    # Isolate the height term: no shaping, alpha-range or early helpers.
+    names = ("progress_reward_per_m", "envelope_reward", "dense_reward", "alive_reward")
+    old = [getattr(c, n) for n in names]
+    for n in names:
+        setattr(c, n, 0.0)
+    try:
+        def reward(rise):  # route moved up by `rise` m: the vehicle is that far below it
+            state = initial.replace(points=initial.points + jp.array([0.0, 0.0, rise]))
+            new, r, term, *_ = env.step(state, state.action)
+            assert int(new.target) == 1 and not bool(term)
+            return float(r)
+        assert abs(reward(0.0)) < 1e-6  # inside the deadband
+        below, above = -reward(3.0), -reward(-3.0)
+        np.testing.assert_allclose(above, c.altitude_penalty * (3.0 - c.altitude_deadband_m), rtol=0.05)
+        np.testing.assert_allclose(below, c.below_route_factor * above, rtol=0.05)
+        np.testing.assert_allclose(-reward(12.0), c.altitude_penalty_max, rtol=1e-5)
+        # Past the vertical band the episode ends with the height failure penalty.
+        state = initial.replace(points=initial.points + jp.array([0.0, 0.0, c.max_vertical_m + 1]))
+        _, r, term, *_ = env.step(state, state.action)
+        assert bool(term) and float(r) == pytest.approx(-c.altitude_failure_penalty)
+    finally:
+        for n, v in zip(names, old):
+            setattr(c, n, v)
 
 
 def test_progress_shaping(env, initial):

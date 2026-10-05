@@ -43,10 +43,19 @@ class PPOConfig:
     gae_lambda: float = machine.load().get("gae_lambda", 0.95)  # set in machine.toml
     clip: float = 0.2
     value_clip: float = 1.0  # value-loss clip, in return units (not the policy's 0.2)
-    entropy: float = 0.001   # bonus at the start, decayed linearly to 0 over training
-    initial_log_std: float = -3.0  # pre-tanh action noise std 0.05: almost none at the start
+    entropy: float = 0.001   # bonus at the start, moved linearly to entropy_final over training
+    entropy_final: float = 0.001  # was 0: a run that stops exploring cannot learn to recover
+    initial_log_std: float = -1.5  # pre-tanh action noise std 0.22 (was -3, std 0.05)
+    min_log_std: float = -2.5  # floor on the noise (std 0.08); runs before it collapsed to ~0.02
     max_grad_norm: float = 0.5
     eval_every: int = 25
+    # Curriculum gate, every eval_every updates on 8 fixed seeds flown to the
+    # end of the route: promote by curriculum_step when the tracking checks
+    # pass and at least gate_completion of the flights finish the route;
+    # demote by the same step when more than demote_failure of them fail.
+    curriculum_step: float = 0.1  # was 0.2
+    gate_completion: float = 0.75
+    demote_failure: float = 0.5
     checkpoint_every: int = 5  # a crash or retry loses at most this many updates
     # The critic also sees ground truth the vehicle cannot measure (canopy shape
     # and attitude, true airspeed, route error; ParamotorEnv._privileged). It is
@@ -58,6 +67,7 @@ class ActorCritic(nn.Module):
     hidden_size: int = 128
     thrust_bias: float = 0.693  # default only; main() sets it from initial_thrust / thrust_max
     initial_log_std: float = -0.7  # default only; main() passes PPOConfig.initial_log_std
+    min_log_std: float = -5.0  # default only; main() passes PPOConfig.min_log_std
 
     @nn.compact
     def __call__(self, obs, critic_obs=None):
@@ -87,7 +97,7 @@ class ActorCritic(nn.Module):
                 critic = nn.tanh(nn.Dense(self.hidden_size, name=f"Dense_{2 * i + 1}")(critic))
             value = nn.Dense(1, kernel_init=nn.initializers.orthogonal(1.0),
                              name="Dense_5")(critic)[..., 0]
-        return mean, jp.clip(log_std, -5, 1), value
+        return mean, jp.clip(log_std, self.min_log_std, 1), value
 
 
 def log_probability(latent, mean, log_std):
@@ -303,7 +313,7 @@ def evaluate_batch(
         actions = jp.tanh(network.apply(params, states.obs)[0])
         new, _, term, trunc, metrics = jax.vmap(env.step)(states, actions)
         record = jp.concatenate(
-            (metrics[:, :4], metrics[:, 5, None], active[:, None]), axis=1
+            (metrics[:, :4], metrics[:, 5, None], active[:, None], metrics[:, 6, None]), axis=1
         )
         keep = active & ~(term | trunc)
         states = select(keep, new, states)
@@ -329,6 +339,7 @@ def evaluate_batch(
                 )
             )
             / (denom * env.control_dt),
+            jp.sum(records[:, :, 6] * weights) / count,  # fraction that finished the route
         ]
     )
 
@@ -402,7 +413,7 @@ def main():
     env = ParamotorEnv(ec)
     # Initial mean thrust = the env's initial thrust, wherever thrust_max sits.
     thrust_bias = float(np.arctanh(np.clip(2 * ec.initial_thrust / ec.thrust_max - 1, -0.99, 0.99)))
-    network = ActorCritic(pc.hidden_size, thrust_bias, pc.initial_log_std)
+    network = ActorCritic(pc.hidden_size, thrust_bias, pc.initial_log_std, pc.min_log_std)
     key = jax.random.PRNGKey(pc.seed)
     key, nk, rk = jax.random.split(key, 3)
     critic_size = env.obs_size + (env.privileged_size if pc.asymmetric_critic else 0)
@@ -493,6 +504,7 @@ def main():
                     "failure_rate",
                     "progress_m_s",
                     "passed",
+                    "completion",
                 ]
             )
         if mode == "w":
@@ -518,7 +530,7 @@ def main():
             begin = time.monotonic()
             (states, key), batch = rollout(learner.params, states, key, difficulty)
             # Entropy bonus decays linearly to 0 at the run's target update.
-            entropy_coef = pc.entropy * max(0.0, 1.0 - iteration / end_update)
+            entropy_coef = pc.entropy + (pc.entropy_final - pc.entropy) * min(1.0, iteration / end_update)
             learner, key, loss = update(learner, key, batch, jp.float32(entropy_coef))
             loss = np.asarray(loss)
             if not np.all(np.isfinite(loss)):
@@ -572,7 +584,7 @@ def main():
             if ec.curriculum and (iteration + 1) % pc.eval_every == 0:
                 result = np.asarray(gate(learner.params, difficulty))
                 print(
-                    "curriculum validation [lateral, vertical, envelope, failures, progress_m/s]:",
+                    "curriculum validation [lateral, vertical, envelope, failures, progress_m/s, completed]:",
                     result,
                     flush=True,
                 )
@@ -582,12 +594,16 @@ def main():
                     and result[2] < 0.05
                     and result[3] < 0.1
                     and result[4] > 2.0
+                    and result[5] >= pc.gate_completion
                 )
                 gate_writer.writerow(
-                    [iteration + 1, env_steps, difficulty, *result, int(passed)]
+                    [iteration + 1, env_steps, difficulty, *result[:5], int(passed), result[5]]
                 )
                 if passed:
-                    difficulty = min(1.0, difficulty + 0.2)
+                    difficulty = min(1.0, difficulty + pc.curriculum_step)
+                elif result[3] > pc.demote_failure:
+                    difficulty = max(0.0, difficulty - pc.curriculum_step)
+                    print(f"curriculum: {result[3]:.0%} of gate flights failed; back to {difficulty:.1f}", flush=True)
             if (
                 iteration + 1
             ) % pc.checkpoint_every == 0 or iteration == start + pc.updates - 1:

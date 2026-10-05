@@ -36,6 +36,7 @@ GATE = [
     ("alpha_outside_fraction", "Time outside alpha envelope", 0.05, "below"),
     ("failure_rate", "Failure rate", 0.1, "below"),
     ("progress_m_s", "Progress along route (m/s)", 2.0, "above"),
+    ("completion", "Flights finishing the route", 0.75, "above"),  # PPOConfig.gate_completion
 ]
 
 
@@ -127,16 +128,19 @@ def training_plots(m, out):
 
 def curriculum_plots(g, out):
     x = g["steps"]
-    fig, axes = figure(2, 3, "Curriculum gate: 8 fixed seeds every eval_every updates (dashed = pass threshold)")
+    fig, axes = figure(2, 4, "Curriculum gate: 8 fixed seeds every eval_every updates (dashed = pass threshold)")
     passed = g["passed"] > 0
-    for ax, (key, label, limit, direction) in zip(axes.ravel(), GATE):
+    gate = [row for row in GATE if row[0] in g]  # runs before the completion check lack it
+    for ax in axes.ravel()[len(gate) + 1:]:
+        ax.axis("off")
+    for ax, (key, label, limit, direction) in zip(axes.ravel(), gate):
         style(ax, f"{label}, {direction} {limit:g}")
         ax.plot(x, g[key], color=SERIES[0], linewidth=2, marker="o", markersize=4)
         ax.axhline(limit, color=INK_2, linewidth=1, linestyle="--")
         if passed.any():
             ax.plot(x[passed], g[key][passed], linestyle="none", marker="o",
                     markersize=8, markerfacecolor="none", markeredgecolor=INK, markeredgewidth=1.2)
-    ax = axes.ravel()[-1]
+    ax = axes.ravel()[len(gate)]
     style(ax, "Difficulty at each gate (ringed = gate passed)")
     ax.step(x, g["difficulty"], where="post", color=SERIES[0], linewidth=2)
     ax.set_ylim(-0.05, 1.05)
@@ -225,7 +229,7 @@ def report(run, m, g, s, out):
     if g is not None:
         last = {k: g[k][-1] for k in g}
         lines += ["## Last curriculum gate", "", "| metric | value | threshold | pass |", "| --- | --- | --- | --- |"]
-        for key, label, limit, direction in GATE:
+        for key, label, limit, direction in (row for row in GATE if row[0] in last):
             ok = last[key] < limit if direction == "below" else last[key] > limit
             lines.append(f"| {label} | {last[key]:.3g} | {direction} {limit:g} | {'yes' if ok else 'no'} |")
         lines += ["", f"Gates passed: {int(g['passed'].sum())} of {len(g['passed'])}.", ""]

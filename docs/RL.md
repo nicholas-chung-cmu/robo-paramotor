@@ -333,7 +333,14 @@ the pass rewards alone. The penalty on command changes (`action_change_penalty`,
 was 0.02 times the squared action change) is off by default.
 
 Failures include ground crossing, excessive tracking error (35 m horizontal or
-25 m vertical from the target segment), or nonfinite dynamics. The canopy
+15 m vertical from the target segment, `max_cross_track_m` and `max_vertical_m`),
+or nonfinite dynamics. Ground and vertical failures cost 30
+(`altitude_failure_penalty`) at every difficulty; the others cost 2 at
+difficulty 0 rising to 10. Height is also penalized every step, at every
+difficulty: 0.01 per metre off the route's height beyond a 1 m deadband, three
+times that below the route, capped at 0.1 per step (flying the route well earns
+about 0.05 per step). Runs saved before these terms keep the 25 m band and no
+height penalty when resumed or evaluated. The canopy
 dropping below the pod no longer ends an episode either. Leaving the calibrated angle-of-attack interval no longer
 ends an episode; it only forgoes the alpha-range reward (each spanwise strip,
 its incidence averaged over the chord by area). A 300-second time limit truncates the episode. PPO bootstraps
@@ -343,9 +350,11 @@ physical stall model.
 
 The curriculum begins with straight, level routes, gradually increases horizontal
 curvature, then adds vertical variation above difficulty 0.5. Every 25 updates, a
-separate deterministic, fixed-seed ten-second evaluation checks tracking, survival,
-forward progress and aerodynamic-envelope compliance. Passing advances difficulty
-by 0.2 for newly reset episodes. Set `curriculum: false` to train at full difficulty.
+separate deterministic, fixed-seed whole-episode evaluation checks tracking, survival,
+forward progress, aerodynamic-envelope compliance and route completion (at least
+75% of the 8 flights must finish, `gate_completion`). Passing advances difficulty
+by 0.1 (`curriculum_step`) for newly reset episodes; more than half the flights
+failing (`demote_failure`) steps it back by 0.1. Set `curriculum: false` to train at full difficulty.
 This gate is an early training aid; the longer fixed evaluation suite is the useful
 comparison for saved policies.
 
@@ -361,7 +370,8 @@ comparison for saved policies.
 
 There is no Gym/Brax wrapper or separate learner framework: `vmap` batches the
 functional environment, `lax.scan` runs physics/rollouts, and Optax updates the PPO
-network. The initial version randomizes starting position and configured sensors;
+network. The initial version randomizes starting position (±1 m sideways, ±3 m in
+height from the route, `start_height_noise_m`) and configured sensors;
 wind, mass and aerodynamic coefficient randomization are not enabled.
 
 ## Validation performed
@@ -394,8 +404,12 @@ whatever the run has written so far and produces `runs/<name>/analysis/`:
   Reward, finished-episode return, cross-track and altitude error, envelope
   violations and curriculum difficulty show whether the pilot is improving.
   Policy/value loss, entropy and approximate KL show whether PPO is healthy.
+  Action noise starts at std 0.22 (`initial_log_std = -1.5`) and cannot fall
+  below 0.08 (`min_log_std = -2.5`); the entropy bonus stays at 0.001
+  (`entropy_final`). Earlier runs started at 0.05 and collapsed to about 0.02.
 - `curriculum.png`: the fixed-seed gate run every `eval_every` updates, with
-  each pass threshold drawn. Difficulty advances by 0.2 when all five pass.
+  each pass threshold drawn. Difficulty advances by 0.1 when all six pass, and
+  drops by 0.1 when more than half the gate flights fail.
 - `evaluation.png`: per-route completion, failure, cross-track and progress from
   `rl.evaluate`, with top-down tracks drawn over the target route.
 - `report.md`: the same headline numbers as text, to paste into notes.

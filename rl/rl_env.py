@@ -81,8 +81,12 @@ class EnvConfig:
     bias_walk_std: dict = field(default_factory=dict)  # channel units / sqrt(second)
     gps_latency_s: float = 0.0
     gps_dropout: float = 0.0
-    position_randomization_m: float = 1.0
+    position_randomization_m: float = 1.0  # sideways launch offset, +-
+    # Launch height offset from the route, +- (uniform): every flight starts
+    # off the route's height and has to correct it (was 0.3 m).
+    start_height_noise_m: float = 3.0
     max_cross_track_m: float = 35.0
+    max_vertical_m: float = 15.0  # off the route vertically ends the episode (was 25)
     # Leaving the aero model's alpha range no longer ends an episode. Instead
     # each control step earns this times the fraction of wing strips inside it
     # (at most 0.125/s at 25 Hz, against ~0.6/s for flying the route at 6 m/s).
@@ -97,6 +101,17 @@ class EnvConfig:
     alive_reward: float = 0.01       # per step survival bonus
     failure_penalty_start: float = 2.0  # failure penalty at difficulty 0 ...
     failure_penalty: float = 10.0       # ... rising to this at difficulty 1
+    # Height. Unlike the early helpers these never fade with the curriculum.
+    # Each step costs altitude_penalty per metre off the route's height beyond
+    # the deadband, below_route_factor times as much below it as above, capped
+    # per step (against ~0.05 per step for flying the route well). Ending on
+    # the ground or past max_vertical_m costs altitude_failure_penalty instead
+    # of the failure penalty above, at every difficulty.
+    altitude_penalty: float = 0.01
+    altitude_deadband_m: float = 1.0
+    below_route_factor: float = 3.0
+    altitude_penalty_max: float = 0.1
+    altitude_failure_penalty: float = 30.0
     solver_iterations: int = 10
     solver_ls_iterations: int = 5
 
@@ -106,13 +121,17 @@ ENDING_REASONS = ("ground", "cross_track", "vertical", "nonfinite")
 
 # Checkpoints saved before the route fields existed trained on 513 points 2 m apart.
 LEGACY_ROUTE = {"route_points": 513, "route_spacing_m": 2.0}
+# Runs saved before the height terms keep their 25 m band and no height penalty.
+LEGACY_HEIGHT = {"max_vertical_m": 25.0, "altitude_penalty": 0.0,
+                 "altitude_failure_penalty": 10.0, "start_height_noise_m": 0.3}
 
 
 def config_from_saved(env):
     """EnvConfig from a checkpoint's saved env dict, filling fields it predates
     and dropping ones since removed (such as envelope_grace_s)."""
     known = {f.name for f in fields(EnvConfig)}
-    return EnvConfig(**{k: v for k, v in {**LEGACY_ROUTE, **env}.items() if k in known})
+    saved = {**LEGACY_ROUTE, **LEGACY_HEIGHT, **env}
+    return EnvConfig(**{k: v for k, v in saved.items() if k in known})
 
 
 def _batched(path):
@@ -222,7 +241,7 @@ class ParamotorEnv:
             raise ValueError("Success radius must be positive, GPS limit non-negative")
         if c.progress_reward_per_m < 0:
             raise ValueError("Progress reward cannot be negative")
-        if min(c.position_randomization_m, c.envelope_reward, c.action_change_penalty) < 0:
+        if min(c.position_randomization_m, c.start_height_noise_m, c.envelope_reward, c.action_change_penalty) < 0:
             raise ValueError("Randomization, envelope reward and action penalty cannot be negative")
         self.latency_ticks = round(c.gps_latency_s * c.sensor_hz)
         self.episode_steps = round(c.episode_seconds * c.control_hz)
@@ -380,7 +399,7 @@ class ParamotorEnv:
         points = points + origin
         # Preserve rigging geometry: shift the pod and the whole skin together.
         offset = jax.random.uniform(nk, (3,), minval=-1.0, maxval=1.0)
-        offset = offset * jp.array([0.0, 1.0, 0.3]) * self.cfg.position_randomization_m
+        offset = offset * jp.array([0.0, self.cfg.position_randomization_m, self.cfg.start_height_noise_m])
         qpos = self.physics.translate(data.qpos, offset)
         data = self.physics.forward(data.replace(qpos=qpos))
         bias = jax.random.normal(bk, (self.n_error,)) * self.bias_scale
@@ -565,7 +584,7 @@ class ParamotorEnv:
         reasons = jp.stack((
             pos[2] < 0,                              # ground
             lateral > self.cfg.max_cross_track_m,    # off route sideways
-            vertical > 25,                           # off route vertically
+            vertical > self.cfg.max_vertical_m,      # off route vertically
             ~finite,                                 # non-finite physics
         ))
         failed = jp.any(reasons)
@@ -588,13 +607,19 @@ class ParamotorEnv:
         heading = jp.dot(ground, segment[:2]) / jp.maximum(
             jp.linalg.norm(ground) * jp.linalg.norm(segment[:2]), 1e-6)
         dense = self.cfg.dense_reward * (heading - jp.clip(vertical / 10.0, 0.0, 1.0))
+        # Height off the route, worse below it (error[2] < 0), at every difficulty.
+        off = jp.maximum(vertical - self.cfg.altitude_deadband_m, 0.0)
+        height = self.cfg.altitude_penalty * off * jp.where(
+            error[2] < 0, self.cfg.below_route_factor, 1.0)
         reward = pass_reward + progress_reward + envelope_reward + early * (
-            dense + self.cfg.alive_reward) - (
+            dense + self.cfg.alive_reward) - jp.minimum(height, self.cfg.altitude_penalty_max) - (
             self.cfg.action_change_penalty * jp.sum((action - previous_action) ** 2))
-        # Failure costs little while episodes earn little, the full penalty later.
+        # Failure costs little while episodes earn little, the full penalty later;
+        # leaving the height band (or hitting the ground) costs the most throughout.
         penalty = self.cfg.failure_penalty_start + (
             self.cfg.failure_penalty - self.cfg.failure_penalty_start) * (1.0 - early)
         reward = jp.nan_to_num(reward, nan=-penalty, posinf=-penalty, neginf=-penalty)
+        penalty = jp.where(reasons[0] | reasons[2], self.cfg.altitude_failure_penalty, penalty)
         reward = jp.where(failed, -penalty, reward) + jp.where(completed, 10.0, 0.0)
         state = state.replace(
             data=data,
@@ -607,7 +632,9 @@ class ParamotorEnv:
         lateral = jp.nan_to_num(
             lateral, nan=self.cfg.max_cross_track_m, posinf=self.cfg.max_cross_track_m
         )
-        vertical = jp.nan_to_num(vertical, nan=25.0, posinf=25.0)
+        vertical = jp.nan_to_num(
+            vertical, nan=self.cfg.max_vertical_m, posinf=self.cfg.max_vertical_m
+        )
         progress = jp.nan_to_num(progress)
         metrics = jp.array(
             [
