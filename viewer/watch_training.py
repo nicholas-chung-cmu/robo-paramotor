@@ -9,7 +9,8 @@ so checkpoints are comparable). The flight that gets furthest along its route
 is replayed on a loop, with its route drawn, until the next checkpoint's best
 flight replaces it. Simulating is slower than real time, so the window starts
 playing the leading flight after the first 10 s and extends it as the flights
-are flown further. A trail shows the path flown, red at the route's height,
+are flown further. Flights use the whole ~1 km route (--route training for the shorter
+curriculum route training flies). A trail shows the path flown, red at the route's height,
 magenta below it and blue above it. Evaluation runs in a background thread, so the window
 keeps playing while the next one computes.
 
@@ -85,9 +86,10 @@ def make_flyer(env, network, steps):
 class Evaluator(threading.Thread):
     """Polls for new checkpoints; puts the best flight of each on a queue."""
 
-    def __init__(self, run, flights, seconds, seed, results):
+    def __init__(self, run, flights, seconds, seed, results, full_route=True):
         super().__init__(daemon=True)
         self.run_dir, self.flights, self.seconds, self.seed = run, flights, seconds, seed
+        self.full_route = full_route
         self.results, self.env, self.fly, self.env_key = results, None, None, None
         self.best_ever, self.best_dir = -np.inf, None
 
@@ -95,6 +97,11 @@ class Evaluator(threading.Thread):
         cfg = config_from_saved(saved["env"])
         if self.seconds:  # else the run's own episode length (whole flights)
             cfg.episode_seconds = self.seconds
+        if self.full_route:
+            # Early in the curriculum training routes are short (150 m, ~30 s
+            # at difficulty 0) and a good flight ends by finishing one. Fly the
+            # whole ~1 km route instead, still shaped by the run's difficulty.
+            cfg.min_route_points = cfg.route_points - 1
         key = (repr(saved["env"]), saved["ppo"]["hidden_size"])
         if key != self.env_key:  # rebuild (and recompile) only if the config changed
             self.env = ParamotorEnv(cfg)
@@ -156,7 +163,9 @@ class Evaluator(threading.Thread):
             text=(
                 f"{path.parent.name}  update {saved['update']}  "
                 f"({saved['env_steps'] / 1e6:.1f} M steps)\n"
-                f"difficulty {float(saved['difficulty']):.1f}\n"
+                f"difficulty {float(saved['difficulty']):.1f}, "
+                f"{self.env._last_point(float(saved['difficulty'])) * self.env.cfg.route_spacing_m:.0f} m route"
+                f"{' (full length, past what training flies)' if self.full_route else ''}\n"
                 f"{'best' if final else 'leader'} of {self.flights}: {progress[best]:.0f} m along route, "
                 f"{mask.sum() * self.env.control_dt:.0f} s, {status}\n"
                 f"median flight: {np.median(progress):.0f} m" + tail
@@ -249,6 +258,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("run", type=Path, help="run directory (or a directory of seed runs)")
     ap.add_argument("--flights", type=int, default=16, help="flights per checkpoint; the best is shown")
+    ap.add_argument("--route", choices=("full", "training"), default="full",
+                    help="full: the whole ~1 km route at the run's difficulty (default); "
+                         "training: the shorter route training currently flies")
     ap.add_argument("--seconds", type=float, default=None,
                     help="length of each flight (default: the run's whole episode, 300 s)")
     ap.add_argument("--seed", type=int, default=20000)
@@ -256,7 +268,7 @@ def main():
     args = ap.parse_args()
 
     results = queue.Queue()
-    Evaluator(args.run, args.flights, args.seconds, args.seed, results).start()
+    Evaluator(args.run, args.flights, args.seconds, args.seed, results, args.route == "full").start()
     print(f"Watching {args.run}: waiting for the first checkpoint...", flush=True)
     current = results.get()  # block until the first 10 s of the first checkpoint
 
