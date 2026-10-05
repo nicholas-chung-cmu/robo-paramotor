@@ -20,12 +20,17 @@
 #   docker/train.sh --name base --seeds 4 --gpus 0,1 # seeds in parallel, one worker per GPU
 #                                                    #   (default GPU list: machine.toml `gpus`)
 #   docker/train.sh --name first --headed            # train + a window replaying, for every
-#                                                    # new checkpoint, its best of 32 flights
+#                                                    # new checkpoint, its best of 16 whole flights
 #   docker/train.sh --watch first                    # that window for a run already training
+#   docker/train.sh --stop                           # stop every training/evaluation job (no retry)
 #   docker/train.sh --viewer                         # interactive MuJoCo viewer (free flight)
 #   docker/train.sh --viewer --sweep --zoom 12       # viewer options after --viewer
 #   docker/train.sh --viewer python -m rl.evaluate runs/first/checkpoint.pkl \
 #       --path left --episodes 1 --view              # replay one evaluation flight
+#
+# Ctrl-C (or `kill <train.sh pid>`) stops the job's containers and does not
+# retry; only crashes are retried. --stop does the same from another terminal.
+# The watcher window stays open; close it to stop it.
 #
 # Any option it does not recognise goes straight to `python -m rl.train`
 # (see `python -m rl.train --help`; --config file.json takes env/ppo overrides).
@@ -65,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --headed)    HEADED=1; shift ;;
     --verbose|-v) VERBOSE=1; TRAIN_ARGS+=(--verbose); shift ;;
     --watch)     MODE=watch; TARGETS+=("$2"); shift 2 ;;
+    --stop)      MODE=stop; shift ;;
     --viewer)    MODE=viewer; shift; TARGETS=("$@"); break ;;
     --compare)   MODE=compare; shift
                  while [[ $# -gt 0 && "$1" != --* ]]; do TARGETS+=("$1"); shift; done ;;
@@ -72,6 +78,29 @@ while [[ $# -gt 0 ]]; do
     *)           TRAIN_ARGS+=("$1"); shift ;;
   esac
 done
+
+# Every job container is labelled with the train.sh that started it, so a stop
+# can find them all. The watcher window is not, so it outlives the job.
+LABEL="paramotor.job"
+stop_jobs() {  # stop_jobs [owner pid]: docker kill this job's containers (all if no pid)
+  local filter="label=$LABEL${1:+=$1}"
+  docker ps -q --filter "$filter" | xargs -r docker kill >/dev/null 2>&1 || true
+}
+if [[ $MODE == stop ]]; then
+  # Signal each train.sh holding a GPU lock (its trap stops its containers and
+  # skips the retry), then kill any labelled container left over.
+  for lock in runs/.gpu*.lock; do
+    [[ -f "$lock" ]] || continue
+    pid=$(sed -n 's/^pid \([0-9]*\) .*/\1/p' "$lock" | head -n 1)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      echo "train.sh: stopping pid $pid ($lock)"; kill -TERM "$pid" || true
+    fi
+  done
+  sleep 2
+  stop_jobs
+  echo "train.sh: no training jobs running"
+  exit 0
+fi
 
 if [[ $CPU -eq 1 ]]; then JAX_CUDA=cpu; else JAX_CUDA="${JAX_CUDA:-cuda13}"; fi
 IMAGE="paramotor-rl:$JAX_CUDA"
@@ -95,10 +124,11 @@ GPU_DEVICE="${GPUS[0]}"   # the GPU in_container uses; workers set their own
 # Run as the host user so runs/ is not owned by root. HOME and MPLCONFIGDIR
 # point at /tmp because that user has no home directory in the image.
 in_container() {
-  local gpu=() tty=()
+  local gpu=() tty=() label=()
+  [[ "${WATCHER:-0}" -eq 1 ]] || label=(--label "$LABEL=$$")
   [[ $CPU -eq 0 && "${NO_GPU:-0}" -eq 0 ]] && gpu=(--gpus "device=$GPU_DEVICE")
   [[ -t 1 ]] && tty=(-t)  # live, coloured output when run from a terminal
-  docker run --rm ${gpu[@]+"${gpu[@]}"} ${tty[@]+"${tty[@]}"} ${display[@]+"${display[@]}"} --ipc=host \
+  docker run --rm ${label[@]+"${label[@]}"} ${gpu[@]+"${gpu[@]}"} ${tty[@]+"${tty[@]}"} ${display[@]+"${display[@]}"} --ipc=host \
     -u "$(id -u):$(id -g)" -e HOME=/tmp -e MPLCONFIGDIR=/tmp \
     -e WARP_CACHE_PATH=/workspace/runs/.warp_cache \
     -v "$PWD:/workspace" -w /workspace "$IMAGE" "$@"
@@ -158,7 +188,7 @@ case "$MODE" in
     exit $? ;;
   watch)
     use_display
-    in_container python -m viewer.watch_training "runs/${TARGETS[0]}"
+    WATCHER=1 in_container python -m viewer.watch_training "runs/${TARGETS[0]}"
     exit $? ;;
   test)
     gpu_lock "$GPU_DEVICE"
@@ -195,6 +225,11 @@ train_one() {
     in_container python -m rl.train --output "$run" "${extra[@]}" \
       ${TRAIN_ARGS[@]+"${TRAIN_ARGS[@]}"} 2>&1 | tee -a "$run/train.log" || status=$?
     [[ $status -eq 0 ]] && return 0
+    # Stopped on purpose (Ctrl-C / SIGTERM, or --stop): no retry.
+    if [[ $status -eq 130 || $status -eq 143 || -f "$STOP_FILE" ]]; then
+      echo "== training stopped (exit $status); not retrying. Resume with: docker/train.sh --finish ${run#runs/}" | tee -a "$run/train.log"
+      exit "$status"
+    fi
     if (( attempt >= RETRIES )); then
       echo "== training failed (exit $status) on attempt $attempt of $RETRIES; giving up" | tee -a "$run/train.log"
       exit "$status"
@@ -207,8 +242,26 @@ train_one() {
       echo "== training failed (exit $status) before a checkpoint; retry $attempt of $RETRIES from scratch in 30 s" | tee -a "$run/train.log"
     fi
     sleep 30
+    [[ -f "$STOP_FILE" ]] && exit 130  # stopped during the pause
   done
 }
+
+# Background workers ignore Ctrl-C (bash does that to `&` jobs), so this shell
+# catches it: mark the stop, end the workers and kill this job's containers.
+STOP_FILE=$(mktemp -u "${TMPDIR:-/tmp}/paramotor-stop.$$.XXXX")
+PIDS=()
+on_stop() {
+  trap - INT TERM
+  echo; echo "== stopping: killing this job's containers (no retry)"
+  touch "$STOP_FILE"
+  stop_jobs "$$"
+  ((${#PIDS[@]})) && kill -TERM "${PIDS[@]}" 2>/dev/null || true
+  ((${#PIDS[@]})) && wait "${PIDS[@]}" 2>/dev/null || true
+  stop_jobs "$$"
+  rm -f "$STOP_FILE"
+  exit 130
+}
+trap on_stop INT TERM
 
 # One worker per GPU, at most one per seed; each trains its seeds in turn.
 WORKERS=$(( SEEDS < ${#GPUS[@]} ? SEEDS : ${#GPUS[@]} ))
@@ -219,10 +272,10 @@ if [[ $HEADED -eq 1 ]]; then
   # open after training ends; close the window to stop it.
   mkdir -p "runs/$NAME"
   if [[ $VERBOSE -eq 1 ]]; then  # watcher messages in this terminal too, prefixed
-    ( release_locks; use_display; in_container python -m viewer.watch_training "runs/$NAME" 2>&1 \
+    ( release_locks; use_display; WATCHER=1 in_container python -m viewer.watch_training "runs/$NAME" 2>&1 \
         | tee "runs/$NAME/watch.log" | sed -u 's/^/[watch] /' ) &
   else
-    ( release_locks; use_display; in_container python -m viewer.watch_training "runs/$NAME" \
+    ( release_locks; use_display; WATCHER=1 in_container python -m viewer.watch_training "runs/$NAME" \
         > "runs/$NAME/watch.log" 2>&1 ) &
   fi
   echo "== watcher window started (log: runs/$NAME/watch.log); it opens after the first checkpoint"
@@ -236,7 +289,6 @@ else
 fi
 # Worker w trains seeds w, w+WORKERS, ... on GPU ${GPUS[w]}, each with its own
 # retries. With several workers, terminal lines are prefixed [gpuN].
-PIDS=()
 for ((w = 0; w < WORKERS; w++)); do
   (
     GPU_DEVICE="${GPUS[w]}"
