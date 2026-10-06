@@ -213,6 +213,28 @@ def test_height_penalty_is_worse_below_the_route(env, initial):
             setattr(c, n, v)
 
 
+def test_sideways_penalty(env, initial):
+    c = env.cfg
+    # Isolate the sideways term: no shaping, alpha-range or early helpers.
+    names = ("progress_reward_per_m", "envelope_reward", "dense_reward", "alive_reward")
+    old = [getattr(c, n) for n in names]
+    for n in names:
+        setattr(c, n, 0.0)
+    try:
+        def reward(side):  # route moved sideways by `side` m
+            state = initial.replace(points=initial.points + jp.array([0.0, side, 0.0]))
+            new, r, term, *_ = env.step(state, state.action)
+            assert int(new.target) == 1 and not bool(term)
+            return float(r)
+        assert abs(reward(0.0)) < 1e-6  # inside the deadband
+        np.testing.assert_allclose(-reward(5.0), c.lateral_penalty * (5.0 - c.lateral_deadband_m), rtol=0.05)
+        np.testing.assert_allclose(-reward(-5.0), -reward(5.0), rtol=0.05)  # either side
+        np.testing.assert_allclose(-reward(30.0), c.lateral_penalty_max, rtol=1e-5)
+    finally:
+        for n, v in zip(names, old):
+            setattr(c, n, v)
+
+
 def test_progress_shaping(env, initial):
     site = env.m.site("pod_com").id
     # Isolate the progress term: the alpha-range reward is checked separately.

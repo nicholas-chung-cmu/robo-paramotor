@@ -64,7 +64,10 @@ class EnvConfig:
     initial_thrust: float = 0.8
     launch_speed: float = 6.0  # m/s, the canopy's design airspeed
     altitude: float = 40.0
-    preview_index: tuple = (2, 4, 8)  # look-ahead, in points past the target
+    # Look-ahead, in points past the target. 0 and 1 (the target and the next
+    # point, 0-20 m ahead) were added so the policy sees a small sideways
+    # offset; with only (2, 4, 8) it drifted ~9 m off straight routes.
+    preview_index: tuple = (0, 1, 2, 4, 8)
     success_radius_m: float = 2.0  # full pass reward within this 3D miss distance
     pass_sigma_m: float = 2.0  # pass reward decays as a Gaussian beyond the radius
     progress_reward_per_m: float = 0.1  # shaping per metre of distance-to-go closed
@@ -112,6 +115,18 @@ class EnvConfig:
     below_route_factor: float = 3.0
     altitude_penalty_max: float = 0.1
     altitude_failure_penalty: float = 30.0
+    # Sideways, also at every difficulty: each step costs lateral_penalty per
+    # metre off the route horizontally beyond the deadband, capped per step.
+    # Without it nothing pulled the vehicle back once it was past the pass
+    # reward's reach (~5 m), and it settled ~9 m off, parallel to the route.
+    lateral_penalty: float = 0.005
+    lateral_deadband_m: float = 1.0
+    lateral_penalty_max: float = 0.05
+    # The early heading reward rewards ground velocity toward the route point
+    # this many past the target, so turning back to the route scores. 0 is
+    # the old reward (along the route segment), which made flying parallel to
+    # the route, off to one side, score best.
+    heading_lookahead_points: int = 1
     solver_iterations: int = 10
     solver_ls_iterations: int = 5
 
@@ -121,9 +136,11 @@ ENDING_REASONS = ("ground", "cross_track", "vertical", "nonfinite")
 
 # Checkpoints saved before the route fields existed trained on 513 points 2 m apart.
 LEGACY_ROUTE = {"route_points": 513, "route_spacing_m": 2.0}
-# Runs saved before the height terms keep their 25 m band and no height penalty.
+# Runs saved before the height and sideways terms keep their old rewards: a
+# 25 m height band, no height or sideways penalty, the segment heading reward.
 LEGACY_HEIGHT = {"max_vertical_m": 25.0, "altitude_penalty": 0.0,
-                 "altitude_failure_penalty": 10.0, "start_height_noise_m": 0.3}
+                 "altitude_failure_penalty": 10.0, "start_height_noise_m": 0.3,
+                 "lateral_penalty": 0.0, "heading_lookahead_points": 0}
 
 
 def config_from_saved(env):
@@ -602,17 +619,22 @@ class ParamotorEnv:
         # (true ground track against the segment into the target), stay at its
         # height, and stay alive.
         early = 1.0 - jp.clip(state.difficulty, 0.0, 1.0)
-        segment = state.points[jp.minimum(target, last)] - state.points[jp.maximum(jp.minimum(target, last) - 1, 0)]
+        if self.cfg.heading_lookahead_points:  # toward a point ahead: corrects offsets
+            aim = state.points[jp.minimum(target + self.cfg.heading_lookahead_points, last)] - pos
+        else:  # along the segment: indifferent to a sideways offset
+            aim = state.points[jp.minimum(target, last)] - state.points[jp.maximum(jp.minimum(target, last) - 1, 0)]
         ground = data.sensordata[self.slices["pod_vel"]][:2]
-        heading = jp.dot(ground, segment[:2]) / jp.maximum(
-            jp.linalg.norm(ground) * jp.linalg.norm(segment[:2]), 1e-6)
+        heading = jp.dot(ground, aim[:2]) / jp.maximum(
+            jp.linalg.norm(ground) * jp.linalg.norm(aim[:2]), 1e-6)
         dense = self.cfg.dense_reward * (heading - jp.clip(vertical / 10.0, 0.0, 1.0))
         # Height off the route, worse below it (error[2] < 0), at every difficulty.
         off = jp.maximum(vertical - self.cfg.altitude_deadband_m, 0.0)
         height = self.cfg.altitude_penalty * off * jp.where(
             error[2] < 0, self.cfg.below_route_factor, 1.0)
+        sideways = self.cfg.lateral_penalty * jp.maximum(lateral - self.cfg.lateral_deadband_m, 0.0)
         reward = pass_reward + progress_reward + envelope_reward + early * (
-            dense + self.cfg.alive_reward) - jp.minimum(height, self.cfg.altitude_penalty_max) - (
+            dense + self.cfg.alive_reward) - jp.minimum(height, self.cfg.altitude_penalty_max) - jp.minimum(
+            sideways, self.cfg.lateral_penalty_max) - (
             self.cfg.action_change_penalty * jp.sum((action - previous_action) ** 2))
         # Failure costs little while episodes earn little, the full penalty later;
         # leaving the height band (or hitting the ground) costs the most throughout.

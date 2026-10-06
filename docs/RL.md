@@ -339,8 +339,14 @@ or nonfinite dynamics. Ground and vertical failures cost 30
 difficulty 0 rising to 10. Height is also penalized every step, at every
 difficulty: 0.01 per metre off the route's height beyond a 1 m deadband, three
 times that below the route, capped at 0.1 per step (flying the route well earns
-about 0.05 per step). Runs saved before these terms keep the 25 m band and no
-height penalty when resumed or evaluated. The canopy
+about 0.05 per step). Sideways error is penalized the same way: 0.005 per metre
+beyond 1 m, capped at 0.05 per step. The early heading reward aims at the route
+point after the target (`heading_lookahead_points`), so turning back toward the
+route scores; it used to reward flying parallel to the route segment, and with no
+sideways penalty, policies settled ~9 m off to one side (see `results/README.md`).
+The policy sees route points 0, 1, 2, 4 and 8 past the target (`preview_index`).
+Runs saved before these terms keep their old rewards (25 m band, no height or
+sideways penalty, segment heading) when resumed or evaluated. The canopy
 dropping below the pod no longer ends an episode either. Leaving the calibrated angle-of-attack interval no longer
 ends an episode; it only forgoes the alpha-range reward (each spanwise strip,
 its incidence averaged over the chord by area). A 300-second time limit truncates the episode. PPO bootstraps
