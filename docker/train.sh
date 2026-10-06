@@ -21,7 +21,7 @@
 #                                                    #   (default GPU list: machine.toml `gpus`)
 #   docker/train.sh --name first --headed            # train + a window replaying, for every
 #                                                    # new checkpoint, its best of 16 whole flights
-#   docker/train.sh --watch first                    # that window for a run already training
+#   docker/train.sh --watch first                    # that window for a run already training (closes after 1 min)
 #   docker/train.sh --stop                           # stop every training/evaluation job (no retry)
 #   docker/train.sh --viewer                         # interactive MuJoCo viewer (free flight)
 #   docker/train.sh --viewer --sweep --zoom 12       # viewer options after --viewer

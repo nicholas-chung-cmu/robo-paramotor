@@ -9,7 +9,8 @@ so checkpoints are comparable). The flight that gets furthest along its route
 is replayed on a loop, with its route drawn, until the next checkpoint's best
 flight replaces it. Simulating is slower than real time, so the window starts
 playing the leading flight after the first 10 s and extends it as the flights
-are flown further. Flights use the whole ~1 km route (--route training for the shorter
+are flown further. The window closes itself after a minute (--close-after 0 keeps it open), so
+it does not slow training all night. Flights use the whole ~1 km route (--route training for the shorter
 curriculum route training flies). A trail shows the path flown, red at the route's height,
 magenta below it and blue above it. Evaluation runs in a background thread, so the window
 keeps playing while the next one computes.
@@ -264,6 +265,9 @@ def main():
     ap.add_argument("--seconds", type=float, default=None,
                     help="length of each flight (default: the run's whole episode, 300 s)")
     ap.add_argument("--seed", type=int, default=20000)
+    ap.add_argument("--close-after", type=float, default=60.0,
+                    help="close the window (and stop simulating, freeing the GPU) this many "
+                         "seconds after it opens; 0 keeps it open")
     ap.add_argument("--speed", type=float, default=1.0, help="playback speed (2 = twice real time)")
     args = ap.parse_args()
 
@@ -279,9 +283,13 @@ def main():
     wait_for_monitor()
     try:
         with mujoco.viewer.launch_passive(model, data) as viewer:
-            viewer.cam.distance, viewer.cam.azimuth, viewer.cam.elevation = 10, 120, -20
+            viewer.cam.distance, viewer.cam.azimuth, viewer.cam.elevation = 35, 120, -25
             i, last, restart = 0, None, True
+            closes = time.monotonic() + args.close_after
             while viewer.is_running():
+                if args.close_after and time.monotonic() > closes:
+                    print(f"watch: closing after {args.close_after:.0f} s (--close-after)", flush=True)
+                    break
                 while not results.empty():
                     new = results.get()
                     # Same flight, flown further: keep playing. Otherwise start over.
