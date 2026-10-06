@@ -1,0 +1,5 @@
+checkpoint,update,env_steps_m,trained_difficulty,survived,cross_track_m,cross_track_p90_m,altitude_error_m,progress_m,error
+runs/ppo-20261005-002307/checkpoint.pkl,190,24.9,0.2,16/16,6.06,15.12,0.41,321,
+runs/ppo-20261004-001627/checkpoint.pkl,435,57.0,1.0,8/16,9.01,18.33,8.01,306,
+runs/ppo-20261003-143414/checkpoint.pkl,175,91.8,0.0,0/16,0.46,0.81,12.00,3,
+runs/first/checkpoint.pkl,,,,,,,,,"ScopeParamShapeError: For parameter ""kernel"" in ""/Dense_0"", the given initializer is expected to generate shape (539, 128), but the existing p"
